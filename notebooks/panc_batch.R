@@ -1,0 +1,985 @@
+library(knitr)
+library(xtable) # table
+library(mixOmics)
+library(sva) # ComBat
+library(ggplot2) # PCA sample plot with density
+library(gridExtra) # PCA sample plot with density
+library(limma) # removeBatchEffect (LIMMA)
+library(vegan) # RDA
+library(AgiMicroRna) # RLE plot
+library(cluster) # silhouette coefficient
+library(variancePartition) # variance calculation
+library(pvca) # PVCA
+library(pheatmap) # heatmap
+library(ruv) # RUVIII
+library(lmerTest) # lmer
+library(bapred)
+library(FactoMineR)# FAbatch
+library(phyloseq)
+library(devtools)
+library(tidyr)
+library(ggpubr)
+library(phyloseq)
+library(plyr)
+library(dplyr)
+library(vegan)
+library(pheatmap)
+library(DESeq2)
+library(ggpubr)
+library(matrixStats)
+library(tibble)
+library(HTSSIP)
+source('/Users/basilews/phylo/helpers.R')
+source('/Users/basilews/phylo/batc_panc/DATA/exp/helpers.R')
+
+#load data
+
+seqtab <- readRDS('/Users/basilews/phylo/batc_panc/DATA/panc1/seqtab_nochim__20.rds')
+seqtab_1 <- readRDS('/Users/basilews/phylo/batc_panc/DATA/panc2/seqtab_nochim__20.rds')
+taxa_1 <- readRDS('/Users/basilews/phylo/batc_panc/DATA/panc2/taxa_20.rds')
+meta_1 <- read.csv('/Users/basilews/phylo/batc_panc/DATA/panc2/panc_meta2b.csv',row.names = 1)
+rownames(seqtab) <- gsub('.{3}$', '', sapply(strsplit(rownames(seqtab), ".", fixed = TRUE), `[`, 1))
+rownames(seqtab_1) <- gsub('.{3}$', '', sapply(strsplit(rownames(seqtab_1), ".", fixed = TRUE), `[`, 1))
+taxa   <- readRDS('/Users/basilews/phylo/batc_panc/DATA/panc1/taxa_20.rds')
+meta <- read.csv('/Users/basilews/phylo/batc_panc/DATA/panc1/panc_metab.csv',row.names = 1,sep=';')
+b<- as.data.frame(row.names(seqtab_1))
+colnames(meta)[which(names(meta ) == "Batch")] <- "batch"
+colnames(meta_1)[which(names(meta_1 ) == "batch")] <- "batch"
+
+#phyloseq obj
+ps <- phyloseq(otu_table(seqtab, taxa_are_rows=FALSE)
+               ,tax_table(taxa) 
+               ,sample_data(meta)
+)
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+n <- as.data.frame(sample_sums(ps))
+c <- c('P005EP','P005KR','P010','P010EP','P008','P008EP')
+'%ni%' <- Negate('%in%')
+my_subset <- subset(ps@sam_data, rownames(ps@sam_data) %ni% c)
+ps <- phyloseq(otu_table(seqtab, taxa_are_rows=FALSE)
+               ,tax_table(taxa) 
+               ,sample_data(my_subset)
+)
+ps_2 <- phyloseq(otu_table(seqtab_1, taxa_are_rows=FALSE)
+                 ,tax_table(taxa_1) 
+                 ,sample_data(meta_1)
+)
+dna <- Biostrings::DNAStringSet(taxa_names(ps_2))
+names(dna) <- taxa_names(ps_2)
+ps_2 <- merge_phyloseq(ps_2, dna)
+taxa_names(ps_2) <- paste0("ASV", seq(ntaxa(ps_2)))
+
+
+taxa_name_func <- function(x) {paste0(x['Phylum'], '.c__' , substr(x['Class'], 1, 3), '.o__' , substr(x['Order'], 1, 5), '.f__' , substr(x['Family'], 1, 3), '.g__' , gsub('/', '', gsub("-", "", x['Genus'])))}
+
+# MERGE THEM
+#CREATE NEW PHYLOSEQ OBJECT FOR PANCREATITIS1
+ps_obj <- ps
+otu_matrix <- as(otu_table(ps_obj), 'matrix')
+taxa_matrix <- as(tax_table(ps_obj), 'matrix')
+taxa_matrix_good_names <- apply(taxa_matrix, MARGIN=1, taxa_name_func)
+# ps_meta <- as(sample_data(ps_obj), 'matrix')
+colnames(otu_matrix) <- taxa_matrix_good_names
+rownames(taxa_matrix) <- taxa_matrix_good_names
+
+count_mtrx_genus <- otu_matrix[, !duplicated(colnames(otu_matrix))]
+taxa_genus <- taxa_matrix[!duplicated(rownames(taxa_matrix)),]
+
+ps <- phyloseq(otu_table(count_mtrx_genus, taxa_are_rows=FALSE)
+               ,tax_table(taxa_genus) 
+               ,sample_data(ps@sam_data)
+)
+
+
+# CREATE NEW PHYLOSEQ OBJECT FOR panc2
+ps_obj <- ps_2
+otu_matrix <- as(otu_table(ps_obj), 'matrix')
+taxa_matrix <- as(tax_table(ps_obj), 'matrix')
+taxa_matrix_good_names <- apply(taxa_matrix, MARGIN=1, taxa_name_func)
+# ps_meta <- as(sample_data(ps_obj), 'matrix')
+colnames(otu_matrix) <- taxa_matrix_good_names
+rownames(taxa_matrix) <- taxa_matrix_good_names
+
+count_mtrx_genus <- otu_matrix[, !duplicated(colnames(otu_matrix))]
+taxa_genus <- taxa_matrix[!duplicated(rownames(taxa_matrix)),]
+
+ps_2 <- phyloseq(otu_table(count_mtrx_genus, taxa_are_rows=FALSE)
+                 ,tax_table(taxa_genus) 
+                 ,sample_data(ps_2@sam_data)
+)
+ps_all <- merge_phyloseq(ps_2,ps)
+
+
+rm(readsumsdf)
+mean(sample_sums(ps_obj))
+
+
+
+
+
+
+ps_all@sam_data 
+#preprocessing
+otu.panc <- as(otu_table(ps_all), 'matrix')
+dim(otu.panc)
+otu.panc.keep <- which(colSums(otu.panc)*100/(sum(colSums(otu.panc))) > 0.01)
+otu.panc.keep <- otu.panc[, otu.panc.keep]
+dim(otu.panc.keep)
+#otu.panc <- otu.panc + 0.01
+otu.panc.keep <- otu.panc.keep + 1
+panc.clr <- logratio.transfo(otu.panc.keep, logratio = 'CLR')
+class(panc.clr) <- 'matrix' 
+ps_all@sam_data$batch <- as.character(ps_all@sam_data$batch)
+panc.gr <- as.factor(ps_all@sam_data$group)
+panc.batch <- as.factor(ps_all@sam_data$batch)
+
+panc.pca.before <- pca(panc.clr, ncomp = 3)
+Scatter_Density(data = panc.pca.before$variates$X, batch = panc.batch, 
+                trt = panc.gr, expl.var = panc.pca.before$explained_variance, 
+                xlim = c(-20,20), ylim = c(-20,20), 
+                batch.legend.title = 'seq (batch)', 
+                trt.legend.title = 'group (trt)', 
+                title = 'Before batch effect correction')
+
+
+#Heatmap
+# Heatmap
+# Sponge data
+# scale on OTUs
+panc.clr.scale <- scale(panc.clr, center = T, scale = T) 
+# scale on samples
+panc.clr.scale <- scale(t(panc.clr.scale), center = T, scale = T) 
+
+anno_col <- data.frame(batch = panc.batch, group = panc.gr)
+anno_metabo_colors <- list(batch = c('1' = '#388ECC', '2' = '#F68B33'), 
+                                  group = c('тяжелая степень' = '#F0E442', 'хр панкреатит' = '#D55E00','легкая степень' = 'red'))
+
+
+pheatmap(panc.clr.scale, 
+         scale = 'none', 
+         cluster_rows = F, 
+         cluster_cols = F, 
+         fontsize_row = 5, fontsize_col = 8,
+         fontsize = 12,
+         clustering_distance_rows = 'euclidean',
+         clustering_method = 'ward.D',
+         treeheight_row = 30,
+         annotation_col = anno_col,
+         annotation_colors = anno_metabo_colors,
+         border_color = 'NA',
+         main = 'Sponge data - Scaled')
+dev.off() 
+
+#load phyloseq object
+ps_all_clr <- ps_all
+otu_table(ps_all_clr) <- otu_table(panc.clr,taxa_are_rows = F)
+ps_obj <- ps_all_clr
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('group','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$group,meta_for_heatmap$batch),]
+all.scale <- scale(ps_all_clr@otu_table, center = T, scale = T) 
+# scale on samples
+all.scale <- scale(t(all.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+ pheatmap( 
+  t((ps_all_clr@otu_table)), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  # col= hmcols, 
+  # breaks = bk,
+  main='before correction')
+ pheatmap( 
+   t((ps_all@otu_table)), 
+   cluster_rows = F, 
+   cluster_cols = T,
+   fontsize_row = 4, fontsize_col = 5,
+   fontsize = 12,
+   clustering_distance_rows = 'euclidean',
+   clustering_method = 'ward.D',
+   treeheight_row = 15,
+   annotation_col = meta_for_heatmap,
+   annotation_colors = annotation_colors,
+   # col= hmcols, 
+   # breaks = bk,
+   main='before correction')
+ 
+#RLE
+panc.batch_l <- panc.batch[panc.gr == 'легкая степень']
+panc.batch_t <- panc.batch[panc.gr == 'тяжелая степень'] 
+panc.batch_h <- panc.batch[panc.gr == 'хр панкреатит'] 
+panc.before_l <- panc.clr[panc.gr == 'легкая степень', ]
+panc.before_t <- panc.clr[panc.gr == 'тяжелая степень', ] 
+panc.before_h <- panc.clr[panc.gr == 'хр панкреатит', ] 
+dev.off()
+#par(mfrow = c(1,3))
+RleMicroRna2(object = t(panc.before_l), batch = panc.batch_l, 
+             maintitle = 'Легкая степень')
+
+RleMicroRna2(object = t(panc.before_t), batch = panc.batch_t, 
+             maintitle = 'Тяжелая с тепень')
+RleMicroRna2(object = t(panc.before_h), batch = panc.batch_h, 
+             maintitle = 'Хронический панкреатит')
+
+
+
+
+#Correcting batch effects
+panc.mod <- model.matrix( ~ panc.gr)
+#BMC (batch mean centering)
+# Sponge data
+panc.b1 <- scale(panc.clr[panc.batch == 1, ], center = TRUE, scale = FALSE)
+panc.b2 <- scale(panc.clr[panc.batch == 2, ], center = TRUE, scale = FALSE)
+panc.bmc <- rbind(panc.b1, panc.b2)
+panc.bmc <- panc.bmc[rownames(panc.clr), ]
+
+#ComBat
+panc.combat <- t(ComBat(t(panc.clr), batch = panc.batch, 
+                          mod = panc.mod, par.prior = F, prior.plots = F))
+
+#removeBatchEffect
+
+panc.limma <- t(removeBatchEffect(t(panc.clr), batch = panc.batch, 
+                                    design = panc.mod))
+#FAbatch ???
+panc.gr.f <- recode_factor(panc.gr, "легкая степень" = "тяжелая степень")
+
+panc.fabatch.obj <- fabatch(x = panc.clr, 
+                              y = as.factor(as.numeric(panc.gr.f)), 
+                              batch = panc.batch)
+panc.fabatch <- panc.fabatch.obj$xadj
+
+#Percentile normalisation
+panc.tss <- t(apply(otu.panc.keep, 1, function(x){x/sum(x)}))
+panc.percentile <- percentile_norm(data = panc.tss, batch = panc.batch,trt = panc.gr)
+#SVD-based method
+
+panc.sd <- apply(panc.clr, 2, sd) # calculate standard deviation
+panc.mean <- apply(panc.clr, 2, mean) # calculate mean
+panc.X <- scale(panc.clr, center = T, scale = T) # center and scale
+
+panc.m <- crossprod(panc.X) # generate a square matrix
+panc.m.svd <- svd(panc.m) # SVD 
+# extract 1st singular vectors
+panc.a1 <- panc.m.svd$u[ ,1] 
+panc.b1 <- panc.m.svd$v[ ,1]
+
+# deflate component 1 from the data
+panc.t1 <- panc.X %*% panc.a1 / drop(sqrt(crossprod(panc.a1)))
+panc.c1 <- crossprod(panc.X, panc.t1) / drop(crossprod(panc.t1))
+panc.svd.defl.matrix1  <- panc.X - panc.t1 %*% t(panc.c1)
+
+# add back mean and standard deviation
+panc.svd <- panc.svd.defl.matrix1
+panc.svd[1:nrow(panc.svd), 1:ncol(panc.svd)] = NA
+for(i in 1:ncol(panc.svd.defl.matrix1)){
+  for(j in 1:nrow(panc.svd.defl.matrix1)){
+    panc.svd[j,i] = panc.svd.defl.matrix1[j,i]*panc.sd[i] + panc.mean[i]
+  }
+}
+
+#Methods evaluation
+#Principal component analysis (PCA) with density plot per component
+panc.pca.before <- pca(panc.clr, ncomp = 3)
+panc.pca.bmc <- pca(panc.bmc, ncomp = 3)
+panc.pca.combat <- pca(panc.combat, ncomp = 3)
+panc.pca.limma <- pca(panc.limma, ncomp = 3)
+panc.pca.percentile <- pca(panc.percentile, ncomp = 3)
+panc.pca.svd <- pca(panc.svd, ncomp = 3)
+panc.pca.fa <- pca(panc.fabatch, ncomp = 3)
+dev.off()
+panc.pca.plot.fa = Scatter_Density(data = panc.pca.fa$variates$X, batch = panc.batch, 
+                                       trt = panc.gr, expl.var = panc.pca.fa$explained_variance,
+                                       xlim = c(-20,20), ylim = c(-20,20),
+                                       batch.legend.title = 'Seq data (batch)', 
+                                       trt.legend.title = 'Group (trt)', 
+                                       title = 'Fabatch batch effect correction')
+panc.pca.plot.before = Scatter_Density(data = panc.pca.before$variates$X, batch = panc.batch, 
+                                         trt = panc.gr, expl.var = panc.pca.before$explained_variance,
+                                       xlim = c(-20,20), ylim = c(-20,20),
+                                         batch.legend.title = 'Seq data (batch)', 
+                                         trt.legend.title = 'Group (trt)', 
+                                         title = 'Before batch effect correction')
+panc.pca.plot.bmc = Scatter_Density(data = panc.pca.bmc$variates$X, batch = panc.batch, 
+                                      trt = panc.gr, expl.var = panc.pca.bmc$explained_variance, 
+                                      xlim = c(-20,20), ylim = c(-20,20), 
+                                      batch.legend.title = 'Seq data (batch)', 
+                                      trt.legend.title = 'Group (trt)', 
+                                      title = 'BMC Correction')
+panc.pca.plot.combat = Scatter_Density(data = panc.pca.combat$variates$X, batch = panc.batch, 
+                                         trt = panc.gr, expl.var = panc.pca.combat$explained_variance, 
+                                         xlim = c(-20,20), ylim = c(-20,20), 
+                                       batch.legend.title = 'Seq data (batch)', 
+                                       trt.legend.title = 'Group (trt)', 
+                                       title = 'Combat Correction')
+panc.pca.plot.limma = Scatter_Density(data = panc.pca.limma$variates$X, batch = panc.batch, 
+                                        trt = panc.gr, expl.var = panc.pca.limma$explained_variance, 
+                                     xlim = c(-20,20), ylim = c(-20,20), 
+                                     batch.legend.title = 'Seq data (batch)', 
+                                     trt.legend.title = 'Group (trt)', 
+                                     title = 'Limma(rBE) Correction')
+grid.arrange(panc.pca.plot.before, panc.pca.plot.bmc, 
+             panc.pca.plot.combat, panc.pca.plot.limma, ncol = 2)
+panc.pca.plot.percentile = Scatter_Density(data = panc.pca.percentile$variates$X, batch = panc.batch, 
+                                             trt = panc.gr, expl.var = panc.pca.percentile$explained_variance, 
+                                           xlim = c(-20,20), ylim = c(-20,20), 
+                                           batch.legend.title = 'Seq data (batch)', 
+                                           trt.legend.title = 'Group (trt)', 
+                                           title = 'Percentile Correction')
+panc.pca.plot.svd = Scatter_Density(data = panc.pca.svd$variates$X, batch = panc.batch, 
+                                                      trt = panc.gr, expl.var = panc.pca.svd$explained_variance, 
+                                                      xlim = c(-20,20), ylim = c(-20,20), 
+                                                      batch.legend.title = 'Seq data (batch)', 
+                                                      trt.legend.title = 'Group (trt)', 
+                                                      title = 'SVD Correction')
+grid.arrange(panc.pca.plot.before, panc.pca.plot.percentile, 
+             panc.pca.plot.svd,panc.pca.plot.fa, ncol = 2)
+
+
+panc.before.df <- data.frame(value = panc.clr[ ,9], batch = panc.batch)
+panc.boxplot.before <- box_plot_fun(data = panc.before.df, 
+                                      x = panc.before.df$batch,
+                                      y = panc.before.df$value, 
+                                      title = 'OTU9 - before', 
+                                      batch.legend.title = 'Seq data (batch)')
+
+panc.bmc.df <- data.frame(value = panc.bmc[ ,9], batch = panc.batch)
+panc.boxplot.bmc <- box_plot_fun(data = panc.bmc.df, 
+                                   x = panc.bmc.df$batch,
+                                   y = panc.bmc.df$value, 
+                                   title = 'OTU9 - BMC', 
+                                   batch.legend.title = 'Seq data (batch)')
+
+
+panc.combat.df <- data.frame(value = panc.combat[ ,9], batch = panc.batch)
+panc.boxplot.combat <- box_plot_fun(data = panc.combat.df, 
+                                      x = panc.combat.df$batch, 
+                                      y = panc.combat.df$value, 
+                                      title = 'OTU9 - ComBat',
+                                      batch.legend.title = 'Seq data (batch)')
+
+
+panc.limma.df <- data.frame(value = panc.limma[ ,9], batch = panc.batch)
+panc.boxplot.limma <- box_plot_fun(data = panc.limma.df, 
+                                     x = panc.limma.df$batch, 
+                                     y = panc.limma.df$value, 
+                                     title = 'OTU9 - rBE', 
+                                     batch.legend.title = 'Data seq (batch)')
+
+panc.percentile.df <- data.frame(value = panc.percentile[ ,9], batch = panc.batch)
+panc.boxplot.percentile <- box_plot_fun(data = panc.percentile.df, 
+                                          x = panc.percentile.df$batch, 
+                                          y = panc.percentile.df$value, 
+                                          title = 'OTU9 - PN ', 
+                                          batch.legend.title = 'Seq data(batch)')
+
+panc.svd.df <- data.frame(value = panc.svd[ ,9], batch = panc.batch)
+panc.boxplot.svd <- box_plot_fun(data = panc.svd.df, 
+                                   x = panc.svd.df$batch, 
+                                   y = panc.svd.df$value, 
+                                   title = 'OTU9 - SVD ', 
+                                   batch.legend.title = 'Seq data (batch)')
+
+
+grid.arrange(panc.boxplot.before, panc.boxplot.bmc, 
+             panc.boxplot.combat, panc.boxplot.limma, ncol = 2)
+grid.arrange(panc.boxplot.before, panc.boxplot.percentile, 
+             panc.boxplot.svd, ncol = 2)
+#density plot
+# before
+panc.dens.before <- ggplot(panc.before.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - before ', x = 'Value', fill = 'Seq data (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+# BMC
+panc.dens.bmc <- ggplot(panc.bmc.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - BMC', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# ComBat
+panc.dens.combat <- ggplot(panc.combat.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - ComBat ', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# removeBatchEffect 
+panc.dens.limma <- ggplot(panc.limma.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - rBE ', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# percentile normal
+panc.dens.percentile <- ggplot(panc.percentile.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - PN ', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# SVD
+panc.dens.svd <- ggplot(panc.svd.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - SVD', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+grid.arrange(panc.dens.before, panc.dens.bmc, 
+             panc.dens.combat, panc.dens.limma, panc.dens.percentile, 
+             panc.dens.svd ,ncol = 2)
+
+
+# P-values
+panc.lm.before <- lm(panc.clr[ ,9] ~ panc.gr + panc.batch)
+summary(panc.lm.before)
+
+panc.lm.bmc <- lm(panc.bmc[ ,9] ~ panc.gr + panc.batch)
+summary(panc.lm.bmc)
+panc.lm.combat <- lm(panc.combat[ ,9] ~ panc.gr + panc.batch)
+summary(panc.lm.combat)
+
+panc.lm.limma <- lm(panc.limma[ ,9] ~ panc.gr + panc.batch)
+summary(panc.lm.limma)
+
+panc.lm.percentile <- lm(panc.percentile[ ,9] ~ panc.gr + panc.batch)
+summary(panc.lm.percentile)
+
+panc.lm.svd <- lm(panc.svd[ ,9] ~ panc.gr + panc.batch)
+summary(panc.lm.svd)
+
+
+
+# sponge data
+# BMC
+panc.batch_l <- panc.batch[panc.gr == 'легкая степень']
+panc.batch_t <- panc.batch[panc.gr == 'тяжелая степень'] 
+panc.batch_h <- panc.batch[panc.gr == 'хр панкреатит'] 
+panc.before_l <- panc.clr[panc.gr == 'легкая степень', ]
+panc.before_t <- panc.clr[panc.gr == 'тяжелая степень', ] 
+panc.before_h <- panc.clr[panc.gr == 'хр панкреатит', ] 
+
+
+panc.bmc_l <- panc.bmc[panc.gr == 'легкая степень', ]
+panc.bmc_t <- panc.bmc[panc.gr == 'тяжелая степень', ] 
+panc.bmc_h <- panc.bmc[panc.gr == 'хр панкреатит',]
+
+# ComBat
+panc.combat_l <- panc.combat[panc.gr == 'легкая степень', ]
+panc.combat_t <- panc.combat[panc.gr == 'тяжелая степень', ] 
+panc.combat_h <- panc.combat[panc.gr == 'хр панкреатит',]
+
+# rBE
+panc.limma_l <- panc.limma[panc.gr == 'легкая степень', ]
+panc.limma_t <- panc.limma[panc.gr == 'тяжелая степень', ] 
+panc.limma_h <- panc.limma[panc.gr == 'хр панкреатит',] 
+
+# PN
+panc.percentile_l <- panc.percentile[panc.gr == 'легкая степень', ]
+panc.percentile_t <- panc.percentile[panc.gr == 'тяжелая степень', ] 
+panc.percentile_h <- panc.percentile[panc.gr == 'хр панкреатит',] 
+
+# SVD
+panc.svd_l <- panc.svd[panc.gr == 'легкая степень', ]
+panc.svd_t <- panc.svd[panc.gr == 'тяжелая степень', ] 
+panc.svd_h <- panc.svd[panc.gr == 'хр панкреатит',] 
+
+#FAbatch
+panc.fa_t <- panc.fabatch[panc.gr == 'тяжелая степень', ] 
+RleMicroRna2(object = t(panc.fa_t), batch = panc.batch_t, 
+             maintitle = 'Panc: Fabacth (тяжелая степень)', title.cex = 1)
+
+
+
+par(mfrow = c(2,3), mai = c(0.4,0.6,0.3,0.1))
+
+RleMicroRna2(object = t(panc.before_l), batch = panc.batch_l, 
+             maintitle = 'Panc: before (легкая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.bmc_l), batch = panc.batch_l, 
+             maintitle = 'Panc: bmc (легкая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.combat_l), batch = panc.batch_l,
+             maintitle = 'Panc: combat (легкая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.limma_l ), batch = panc.batch_l, 
+             maintitle = 'Panc: limma (легкая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.percentile_l), batch = panc.batch_l, 
+             maintitle = 'Panc: PN (легкая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.svd_l), batch = panc.batch_l, 
+             maintitle = 'Panc: svd (легкая степень)', title.cex = 1)
+
+
+
+
+
+
+
+par(mfrow = c(2,3), mai = c(0.4,0.6,0.3,0.1))
+
+RleMicroRna2(object = t(panc.before_t), batch = panc.batch_t, 
+             maintitle = 'Panc: before (тяжелая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.bmc_t), batch = panc.batch_t, 
+             maintitle = 'Panc: bmc (тяжелая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.combat_t), batch = panc.batch_t, 
+             maintitle = 'Panc: combat (тяжелая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.limma_t ), batch = panc.batch_t, 
+             maintitle = 'Panc: limma (тяжелая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.percentile_t),batch = panc.batch_t, 
+             maintitle = 'Panc: percentile (тяжелая степень)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.svd_t), batch = panc.batch_t, 
+             maintitle = 'Panc: svd (тяжелая степень)', title.cex = 1)
+dev.off()
+
+RleMicroRna2(object = t(panc.before_h), batch = panc.batch_h, 
+             maintitle = 'Panc: before (хр панткреатит)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.bmc_h), batch = panc.batch_h, 
+             maintitle = 'Panc: bmc (хр панткреатит)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.combat_h), batch = panc.batch_h, 
+             maintitle = 'Panc: combat (хр панткреатит)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.limma_h ), batch = panc.batch_h, 
+             maintitle = 'Panc: limma (хр панткреатит)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.percentile_h),batch = panc.batch_h, 
+             maintitle = 'Panc: percentile (хр панткреатит)', title.cex = 1)
+
+RleMicroRna2(object = t(panc.svd_h), batch = panc.batch_h, 
+             maintitle = 'Panc: svd (хр панткреатит)', title.cex = 1)
+
+#Pheatmap
+#Combat
+#load phyloseq object
+ps_combat<- ps_all
+otu_table(ps_combat) <- otu_table(panc.combat,taxa_are_rows = F)
+ps_obj <- ps_combat
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('group','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$group,meta_for_heatmap$batch),]
+combat.scale <- scale(ps_combat@otu_table, center = T, scale = T) 
+# scale on samples
+combat.scale <- scale(t(combat.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  t((ps_combat@otu_table)), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  #clustering_distance_rows = 'euclidean',
+  #clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='Combat correction')
+
+#BMC
+ps_bmc<- ps_all
+otu_table(ps_bmc) <- otu_table(panc.bmc,taxa_are_rows = F)
+ps_obj <- ps_bmc
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('group','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$group,meta_for_heatmap$batch),]
+bmc.scale <- scale(ps_bmc@otu_table, center = T, scale = T) 
+# scale on samples
+bmc.scale <- scale(t(bmc.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  t((ps_bmc@otu_table)), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='BMC correction')
+
+
+#limma
+ps_limma<- ps_all
+otu_table(ps_limma) <- otu_table(panc.limma,taxa_are_rows = F)
+ps_obj <- ps_limma
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('group','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$group,meta_for_heatmap$batch),]
+limma.scale <- scale(ps_limma@otu_table, center = T, scale = T) 
+# scale on samples
+limma.scale <- scale(t(limma.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  t(ps_limma@otu_table), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  #clustering_distance_rows = 'euclidean',
+  #clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='Limma correction')
+
+#svd
+ps_svd<- ps_all
+otu_table(ps_svd) <- otu_table(panc.svd,taxa_are_rows = F)
+ps_obj <- ps_svd
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('group','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$group,meta_for_heatmap$batch),]
+#limma.scale <- scale(ps_limma@otu_table, center = T, scale = T) 
+# scale on samples
+#limma.scale <- scale(t(limma.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  t(ps_svd@otu_table), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  #clustering_distance_rows = 'euclidean',
+  #clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='svd correction')
+
+pheatmap( 
+  t(panc.fabatch), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  #clustering_distance_rows = 'euclidean',
+  #clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='fabatch correction')
+
+
+#percentile
+ps_pn<- ps_all
+otu_table(ps_pn) <- otu_table(panc.percentile ,taxa_are_rows = F)
+ps_obj <- ps_pn
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('group','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$group,meta_for_heatmap$batch),]
+#limma.scale <- scale(ps_limma@otu_table, center = T, scale = T) 
+# scale on samples
+#limma.scale <- scale(t(limma.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  t(ps_pn@otu_table), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  #clustering_distance_rows = 'euclidean',
+  #clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='PN correction')
+
+
+
+#Linear model per variable
+#
+panc.form <- ~ panc.gr + panc.batch
+panc.info <- as.data.frame(cbind(rownames(panc.clr),panc.gr, panc.batch))
+rownames(panc.info) <- rownames(panc.clr)
+
+# before
+panc.varPart.before <- fitExtractVarPartModel(exprObj = t(panc.clr), 
+                                                formula = panc.form, 
+                                                data = panc.info)
+
+# BMC
+panc.varPart.bmc <- fitExtractVarPartModel(exprObj = t(panc.bmc), 
+                                             formula = panc.form, 
+                                             data = panc.info)
+#fabacth
+panc.varPart.fab <- fitExtractVarPartModel(exprObj = t(panc.fabatch), 
+                                           formula = panc.form, 
+                                           data = panc.info)
+# combat
+panc.varPart.combat <- fitExtractVarPartModel(exprObj = t(panc.combat), 
+                                                formula = panc.form, 
+                                                data = panc.info)
+
+# removeBatchEffect
+panc.varPart.limma <- fitExtractVarPartModel(exprObj = t(panc.limma), 
+                                               formula = panc.form, 
+                                               data = panc.info)
+
+# percentile normalisation
+panc.varPart.percentile <- fitExtractVarPartModel(exprObj = t(panc.percentile), 
+                                                    formula = panc.form, 
+                                                    data = panc.info)
+
+# svd
+panc.varPart.svd <- fitExtractVarPartModel(exprObj = t(panc.svd), 
+                                             formula = panc.form, 
+                                             data = panc.info)
+# extract the variance of trt and batch
+# before
+panc.varmat.before <- as.matrix(panc.varPart.before[ ,1:2])
+# BMC
+panc.varmat.bmc <- as.matrix(panc.varPart.bmc[ ,1:2])
+# ComBat
+panc.varmat.combat <- as.matrix(panc.varPart.combat[ ,1:2])
+# removeBatchEffect
+panc.varmat.limma <- as.matrix(panc.varPart.limma[ ,1:2])
+# percentile normalisation
+panc.varmat.percentile <- as.matrix(panc.varPart.percentile[ ,1:2])
+# SVD
+panc.varmat.svd <- as.matrix(panc.varPart.svd[ ,1:2])
+#fabatch
+panc.varmat.fab <- as.matrix(panc.varPart.fab[ ,1:2])
+# merge results
+panc.variance <- c(as.vector(panc.varmat.before), as.vector(panc.varmat.bmc),
+                     as.vector(panc.varmat.combat), as.vector(panc.varmat.limma),
+                     as.vector(panc.varmat.percentile), as.vector(panc.varmat.svd),as.vector(panc.varmat.fab))
+
+# add batch, trt and methods info
+panc.variance <- cbind(variance = panc.variance, 
+                         Type = rep(c('Group', 'Batch'), each = ncol(panc.clr)),
+                         method = rep(c('Before', 'BMC', 'ComBat', 'rBE', 
+                                        'PN', 'SVD','Fabatch'), each = 2*ncol(panc.clr)))
+# reorder levels  
+panc.variance <- as.data.frame(panc.variance)
+panc.variance$method <- factor(panc.variance$method, 
+                                 levels = unique(panc.variance$method))
+panc.variance$variance <- as.numeric(as.character(panc.variance$variance))
+
+ggplot(panc.variance, aes(x = Type, y = variance, fill = Type)) + 
+  geom_boxplot() + facet_grid(cols = vars(method)) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), 
+        strip.text = element_text(size = 12), panel.grid = element_blank(), 
+        axis.text = element_text(size = 12), axis.title = element_text(size = 15), 
+        legend.title = element_text(size = 15), legend.text = element_text(size = 12)) + 
+  labs(x = 'Type', y = 'Proportion Variance', name = 'Type') + ylim(0,1)
+
+
+panc.b.coeff <- c()
+for(i in 1:ncol(panc.clr)){
+  res <- lm(panc.clr[ ,i] ~ panc.gr + panc.batch)
+  sum.res <- summary(res)
+  panc.b.coeff[i] <- sum.res$coefficients[3,1]
+}
+
+
+par(mfrow = c(2,2))
+hist(panc.b.coeff,col = 'gray')
+plot(density(panc.b.coeff))
+qqnorm(panc.b.coeff)
+qqline(panc.b.coeff, col='red')
+par(mfrow = c(1,1))
+panc.b.coeff
+table(ps_all@sam_data$group)
+
+
+
+# The pRDA method is a multivariate method to assess globally the effect of batch and treatment (two separate models
+panc.data.design <- numeric()
+panc.data.design$group <- panc.gr
+panc.data.design$batch <- panc.batch
+
+# before
+# conditioning on a batch effect
+panc.rda.before1 <- rda(panc.clr ~ group + Condition(batch), 
+                          data = panc.data.design)
+panc.rda.before2 <- rda(panc.clr ~ batch + Condition(group), 
+                          data = panc.data.design)
+
+# amount of variance
+panc.rda.bat_prop.before <- panc.rda.before1$pCCA$tot.chi*100/panc.rda.before1$tot.chi
+panc.rda.trt_prop.before <- panc.rda.before2$pCCA$tot.chi*100/panc.rda.before2$tot.chi
+
+# BMC
+# conditioning on a batch effect
+panc.rda.bmc1 <- rda(panc.bmc ~ group + Condition(batch), 
+                       data = panc.data.design)
+panc.rda.bmc2 <- rda(panc.bmc ~ batch + Condition(group), 
+                       data = panc.data.design)
+
+# amount of variance
+panc.rda.bat_prop.bmc <- panc.rda.bmc1$pCCA$tot.chi*100/panc.rda.bmc1$tot.chi
+panc.rda.trt_prop.bmc <- panc.rda.bmc2$pCCA$tot.chi*100/panc.rda.bmc2$tot.chi
+
+
+# combat
+# conditioning on a batch effect
+panc.rda.combat1 <- rda(panc.combat ~ group + Condition(batch), 
+                          data = panc.data.design)
+panc.rda.combat2 <- rda(panc.combat ~ batch + Condition(group), 
+                          data = panc.data.design)
+
+# amount of variance
+panc.rda.bat_prop.combat <- panc.rda.combat1$pCCA$tot.chi*100/panc.rda.combat1$tot.chi
+panc.rda.trt_prop.combat <- panc.rda.combat2$pCCA$tot.chi*100/panc.rda.combat2$tot.chi
+
+
+# limma
+# conditioning on a batch effect
+panc.rda.limma1 <- rda(panc.limma ~ group + Condition(batch), 
+                         data = panc.data.design)
+panc.rda.limma2 <- rda(panc.limma ~ batch + Condition(group), 
+                         data = panc.data.design)
+
+# amount of variance
+panc.rda.bat_prop.limma <- panc.rda.limma1$pCCA$tot.chi*100/panc.rda.limma1$tot.chi
+panc.rda.trt_prop.limma <- panc.rda.limma2$pCCA$tot.chi*100/panc.rda.limma2$tot.chi
+
+
+# percentile
+# conditioning on a batch effect
+panc.rda.percentile1 <- rda(panc.percentile ~ group + Condition(batch), 
+                              data = panc.data.design)
+panc.rda.percentile2 <- rda(panc.percentile ~ batch + Condition(group), 
+                              data = panc.data.design)
+
+# amount of variance
+panc.rda.bat_prop.percentile <- panc.rda.percentile1$pCCA$tot.chi*100/panc.rda.percentile1$tot.chi
+panc.rda.trt_prop.percentile <- panc.rda.percentile2$pCCA$tot.chi*100/panc.rda.percentile2$tot.chi
+
+
+# SVD
+# conditioning on a batch effect
+panc.rda.svd1 <- rda(panc.svd ~ group + Condition(batch), 
+                       data = panc.data.design)
+panc.rda.svd2 <- rda(panc.svd ~ batch + Condition(group), 
+                       data = panc.data.design)
+
+# amount of variance
+panc.rda.bat_prop.svd <- panc.rda.svd1$pCCA$tot.chi*100/panc.rda.svd1$tot.chi
+panc.rda.trt_prop.svd <- panc.rda.svd2$pCCA$tot.chi*100/panc.rda.svd2$tot.chi
+
+
+# Fabatch
+# conditioning on a batch effect
+panc.rda.fabatch1 <- rda(panc.fabatch ~ group + Condition(batch), 
+                     data = panc.data.design)
+panc.rda.fabatch2 <- rda(panc.fabatch ~ batch + Condition(group), 
+                     data = panc.data.design)
+
+# amount of variance
+panc.rda.bat_prop.fabatch <- panc.rda.fabatch1$pCCA$tot.chi*100/panc.rda.fabatch1$tot.chi
+panc.rda.trt_prop.fabatch <- panc.rda.fabatch2$pCCA$tot.chi*100/panc.rda.fabatch2$tot.chi
+
+
+
+#We now represent the amount of variance explained by batch and treatment estimated with pRDA:
+  
+  # proportion
+panc.rda.prop.before <- c(panc.rda.bat_prop.before, 
+                          panc.rda.trt_prop.before)
+panc.rda.prop.bmc <- c(panc.rda.bat_prop.bmc, 
+                       panc.rda.trt_prop.bmc)
+panc.rda.prop.combat <- c(panc.rda.bat_prop.combat, 
+                          panc.rda.trt_prop.combat)
+panc.rda.prop.limma <- c(panc.rda.bat_prop.limma, 
+                         panc.rda.trt_prop.limma)
+panc.rda.prop.percentile <- c(panc.rda.bat_prop.percentile, 
+                              panc.rda.trt_prop.percentile)
+panc.rda.prop.svd <- c(panc.rda.bat_prop.svd, 
+                       panc.rda.trt_prop.svd)
+panc.rda.prop.fabatch <- c(panc.rda.bat_prop.fabatch, 
+                       panc.rda.trt_prop.fabatch)
+
+# merge results
+panc.rda.prop.val <- c(panc.rda.prop.before, panc.rda.prop.bmc, 
+                       panc.rda.prop.combat, panc.rda.prop.limma, 
+                       panc.rda.prop.percentile, panc.rda.prop.svd, panc.rda.prop.fabatch)
+
+# add batch, trt and method info
+panc.rda.prop <- data.frame(prop = panc.rda.prop.val, 
+                              prop.r = round(panc.rda.prop.val, 2), 
+                              Method = rep(c('Before', 'BMC', 'ComBat', 
+                                             'rBE', 'PN', 'SVD','Fabatch'), each = 2), 
+                              Type = rep(c('Batch', 'Group'), 7))
+
+# reorder levels
+panc.rda.prop$Method <- factor(panc.rda.prop$Method, 
+                                 levels = unique(panc.rda.prop$Method))
+
+ggplot(data = panc.rda.prop, aes(x = Method, y = prop, fill = Type)) + 
+  geom_bar(stat = "identity", position = 'dodge', colour = 'black') + 
+  geom_text(data = panc.rda.prop, aes(Method, prop + 2.5, label = prop.r), 
+            position = position_dodge(width = 0.9), size = 3) + theme_bw() + 
+  labs(y = "Variance explained (%)") + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), 
+        panel.grid = element_blank(), axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 15), legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12)) + ylim(0,100)
+

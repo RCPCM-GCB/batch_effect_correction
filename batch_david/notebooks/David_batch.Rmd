@@ -1,0 +1,869 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+https://evayiwenwang.github.io/Managing_batch_effects/eval.html#rle-plots-1
+```{r}
+library(knitr)
+library(xtable) # table
+library(mixOmics)
+library(sva) # ComBat
+library(ggplot2) # PCA sample plot with density
+library(gridExtra) # PCA sample plot with density
+library(limma) # removeBatchEffect (LIMMA)
+library(vegan) # RDA
+library(AgiMicroRna) # RLE plot
+library(cluster) # silhouette coefficient
+library(variancePartition) # variance calculation
+library(pvca) # PVCA
+library(pheatmap) # heatmap
+library(ruv) # RUVIII
+library(lmerTest) # lmer
+library(bapred)
+library(FactoMineR)# FAbatch
+library(phyloseq)
+library(devtools)
+library(tidyr)
+library(ggpubr)
+library(phyloseq)
+library(plyr)
+library(dplyr)
+library(vegan)
+library(pheatmap)
+library(DESeq2)
+library(ggpubr)
+library(matrixStats)
+library(tibble)
+library(HTSSIP)
+source('/Users/basilews/phylo/helpers.R')
+source('/Users/basilews/phylo/batc_panc/DATA/exp/helpers.R')
+
+```
+```{r}
+#Import data
+david <- readRDS('/Users/basilews/phylo/batch_david/data/psasv_min_sample_depth1750_minprev39_strict_min_asv_depth10.rds')
+ps_meta <- as(sample_data(david), 'data.frame')
+ps_obj <- david
+otu_matrix <- as(otu_table(ps_obj), 'matrix')
+taxa_matrix <- as(tax_table(ps_obj), 'matrix')
+taxa_matrix_good_names <- apply(taxa_matrix, MARGIN=1, taxa_name_func)
+colnames(otu_matrix) <- taxa_matrix_good_names
+rownames(taxa_matrix) <- taxa_matrix_good_names
+
+count_mtrx_genus <- otu_matrix[, !duplicated(colnames(otu_matrix))]
+taxa_genus <- taxa_matrix[!duplicated(rownames(taxa_matrix)),]
+
+david <- phyloseq(otu_table(count_mtrx_genus, taxa_are_rows=FALSE)
+                  ,tax_table(taxa_genus) 
+                  ,sample_data(ps_meta)
+)
+
+```
+#remove 'repeat' cases from data
+```{r}
+#remove 'repeat' cases from data
+table(david@sam_data$s_sec)
+meta <- subset(david@sam_data,s_sec == 'repeat')
+b <- row.names(meta)
+'%ni%' <- Negate('%in%')
+david <- subset_samples(david, running_id %ni% meta$running_id)
+table(david@sam_data$s_sec)
+```
+#preprocessing data
+```{r}
+
+otu.david <- as(otu_table(david), 'matrix')
+dim(otu.david)
+otu.david.keep <- which(colSums(otu.david)*100/(sum(colSums(otu.david))) > 0.01)
+otu.david.keep <- otu.david[, otu.david.keep]
+dim(otu.david.keep)
+otu.david.keep<- otu.david.keep + 1
+david.clr <- logratio.transfo(otu.david.keep, logratio = 'CLR')
+class(david.clr) <- 'matrix' 
+david@sam_data$batch <- as.character(david@sam_data$batch)
+david@sam_data$batch
+david.trt <- as.factor(david@sam_data$s_sec)
+david.batch <- as.factor(david@sam_data$batch)
+```
+#PCA before
+```{r}
+#PCA 
+
+david.pca.before <- pca(david.clr, ncomp = 3)
+Scatter_Density(data = david.pca.before$variates$X, batch = david.batch, 
+                trt = david.trt, expl.var = david.pca.before$explained_variance, 
+                xlim = c(-20,20), ylim = c(-20,20), 
+                batch.legend.title = '(batch)', 
+                trt.legend.title = ' (trt)', 
+                title = 'Before batch effect correction')
+```
+#Pheatmap before
+```{r}
+
+
+ps_david_clr <- david
+otu_table(ps_david_clr) <- otu_table(david.clr,taxa_are_rows = F)
+ps_obj <- ps_david_clr
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('s_sec','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+all.scale <- scale(ps_david_clr@otu_table, center = T, scale = T) 
+# scale on samples
+all.scale <- scale(t(all.scale), center = T, scale = T) 
+pheatmap( 
+  ((all.scale)), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  # col= hmcols, 
+  # breaks = bk,
+  main='before correction')
+```
+#RLE before
+```{r, fig.width=20, fig.height=10}
+david.batch_m <- david.batch[david.trt == 'main']
+david.batch_n <- david.batch[david.trt == 'narcology'] 
+david.before_m <- david.clr[david.trt == 'main', ]
+david.before_n <- david.clr[david.trt == 'narcology', ] 
+
+
+#par(mfrow = c(1,3))
+RleMicroRna2(object = t(david.before_m), batch = david.batch_m, 
+             maintitle = 'main')
+
+RleMicroRna2(object = t(david.before_n), batch = david.batch_n,maintitle = 'narcology')
+
+```
+#Correcting batch effects combat
+```{r}
+#ComBat
+david.combat <- t(ComBat(t(david.clr), batch = david.batch, 
+                        mod = david.mod, par.prior = F, prior.plots = F))
+
+```
+#Correcting batch effects removeBatchEffect
+
+```{r}
+
+david.limma <- t(removeBatchEffect(t(david.clr), batch = david.batch, 
+                                  design = david.mod))
+```
+#Correcting batch effects FAbatch ??? выдает ошибку 
+```{r}
+#FAbatch ???
+david.batchf <- as.factor(as.numeric(david.batch))
+david.trtf <- as.factor(as.numeric(david.trt))
+length(david.trtf)
+dim(david.clr)
+david.fabatch.obj <- fabatch(x = david.clr, 
+                          y = david.trtf, 
+                          batch = david.batchf)
+david.fabatch <- david.fabatch.obj$xadj
+```
+#Correcting batch effects Percentile normalisation
+```{r}
+#Percentile normalisation
+david.tss <- t(apply(otu.david.keep, 1, function(x){x/sum(x)}))
+david.percentile <- percentile_norm(data = david.tss, batch = david.batch,trt = david.trt)
+```
+
+#Correcting batch effects BMC
+```{r}
+david.mod <- model.matrix( ~ david.trt)
+#BMC (batch mean centering)
+david.b1 <- scale(david.clr[david.batch == 'B3', ], center = TRUE, scale = FALSE)
+david.b2 <- scale(david.clr[david.batch == 'B4', ], center = TRUE, scale = FALSE)
+david.b3 <- scale(david.clr[david.batch == 'B6', ], center = TRUE, scale = FALSE)
+david.bmc <- rbind(david.b1, david.b2, david.b3)
+david.bmc <- david.bmc[rownames(david.clr), ]
+
+```
+#Correcting batch effects SVD-based method
+```{r}
+
+
+david.sd <- apply(david.clr, 2, sd) # calculate standard deviation
+david.mean <- apply(david.clr, 2, mean) # calculate mean
+david.X <- scale(david.clr, center = T, scale = T) # center and scale
+
+david.m <- crossprod(david.X) # generate a square matrix
+david.m.svd <- svd(david.m) # SVD 
+# extract 1st singular vectors
+david.a1 <- david.m.svd$u[ ,1] 
+david.b1 <- david.m.svd$v[ ,1]
+
+# deflate component 1 from the data
+david.t1 <- david.X %*% david.a1 / drop(sqrt(crossprod(david.a1)))
+david.c1 <- crossprod(david.X, david.t1) / drop(crossprod(david.t1))
+david.svd.defl.matrix1  <- david.X - david.t1 %*% t(david.c1)
+
+# add back mean and standard deviation
+david.svd <- david.svd.defl.matrix1
+david.svd[1:nrow(david.svd), 1:ncol(david.svd)] = NA
+for(i in 1:ncol(david.svd.defl.matrix1)){
+  for(j in 1:nrow(david.svd.defl.matrix1)){
+    david.svd[j,i] = david.svd.defl.matrix1[j,i]*david.sd[i] + david.mean[i]
+  }
+}
+
+```
+#Principal component analysis (PCA) with density plot per component
+```{r}
+
+david.pca.before <- pca(david.clr, ncomp = 3)
+david.pca.bmc <- pca(david.bmc, ncomp = 3)
+david.pca.combat <- pca(david.combat, ncomp = 3)
+david.pca.limma <- pca(david.limma, ncomp = 3)
+david.pca.percentile <- pca(david.percentile, ncomp = 3)
+david.pca.svd <- pca(david.svd, ncomp = 3)
+#david.pca.fa <- pca(panc.fabatch, ncomp = 3)
+#panc.pca.plot.fa = Scatter_Density(data = panc.pca.fa$variates$X, batch = panc.batch, 
+                                   #trt = panc.gr, expl.var = panc.pca.fa$explained_variance,
+                                   #xlim = c(-20,20), ylim = c(-20,20),
+                                   #batch.legend.title = 'Seq data (batch)', 
+                                   #trt.legend.title = 'Group (trt)', 
+                                   #title = 'Fabatch batch effect correction')
+david.pca.plot.before = Scatter_Density(data = david.pca.before$variates$X, batch = david.batch, 
+                                       trt = david.trt, expl.var = david.pca.before$explained_variance,
+                                       xlim = c(-10,10), ylim = c(-10,10),
+                                       batch.legend.title = '(batch)', 
+                                       trt.legend.title = '(trt)', 
+                                       title = 'Before batch effect correction')
+david.pca.plot.bmc = Scatter_Density(data = david.pca.bmc$variates$X, batch = david.batch, 
+                                    trt = david.trt, expl.var = david.pca.bmc$explained_variance, 
+                                    xlim = c(-10,10), ylim = c(-10,10), 
+                                    batch.legend.title = ' (batch)', 
+                                    trt.legend.title = '(trt)', 
+                                    title = 'BMC Correction')
+david.pca.plot.combat = Scatter_Density(data =david.pca.combat$variates$X, batch = david.batch, 
+                                       trt = david.trt, expl.var =david.pca.combat$explained_variance, 
+                                       xlim = c(-10,10), ylim = c(-10,10), 
+                                       batch.legend.title = ' (batch)', 
+                                       trt.legend.title = ' (trt)', 
+                                       title = 'Combat Correction')
+david.pca.plot.limma = Scatter_Density(data = david.pca.limma$variates$X, batch = david.batch, 
+                                      trt = david.trt, expl.var = david.pca.limma$explained_variance, 
+                                      xlim = c(-10,10), ylim = c(-10,10), 
+                                      batch.legend.title = ' (batch)', 
+                                      trt.legend.title = '(trt)', 
+                                      title = 'Limma(rBE) Correction')
+grid.arrange(david.pca.plot.before, david.pca.plot.bmc, 
+             david.pca.plot.combat, david.pca.plot.limma, ncol = 2)
+david.pca.plot.percentile = Scatter_Density(data = david.pca.percentile$variates$X, batch = david.batch, 
+                                           trt = david.trt, expl.var = david.pca.percentile$explained_variance, 
+                                           xlim = c(-10,10), ylim = c(-10,10), 
+                                           batch.legend.title = ' (batch)', 
+                                           trt.legend.title = ' (trt)', 
+                                           title = 'Percentile Correction')
+david.pca.plot.svd = Scatter_Density(data = david.pca.svd$variates$X, batch = david.batch, 
+                                    trt = david.trt, expl.var = david.pca.svd$explained_variance, 
+                                    xlim = c(-10,10), ylim = c(-10,10), 
+                                    batch.legend.title = '(batch)', 
+                                    trt.legend.title = '(trt)', 
+                                    title = 'SVD Correction')
+grid.arrange(david.pca.plot.before, david.pca.plot.percentile, 
+             david.pca.plot.svd,ncol = 2)#pdavid.pca.plot.fa, ncol = 2)
+
+```
+
+
+#box plots per otu
+```{r}
+david.before.df <- data.frame(value = david.clr[ ,9], batch = david.batch)
+david.boxplot.before <- box_plot_fun(data = david.before.df, 
+                                    x = david.before.df$batch,
+                                    y = david.before.df$value, 
+                                    title = 'OTU9 - before', 
+                                    batch.legend.title = 'Seq data (batch)')
+
+david.bmc.df <- data.frame(value = david.bmc[ ,9], batch = david.batch)
+david.boxplot.bmc <- box_plot_fun(data = david.bmc.df, 
+                                 x = david.bmc.df$batch,
+                                 y = david.bmc.df$value, 
+                                 title = 'OTU9 - BMC', 
+                                 batch.legend.title = 'Seq data (batch)')
+
+
+david.combat.df <- data.frame(value = david.combat[ ,9], batch = david.batch)
+david.boxplot.combat <- box_plot_fun(data = david.combat.df, 
+                                    x = david.combat.df$batch, 
+                                    y = david.combat.df$value, 
+                                    title = 'OTU9 - ComBat',
+                                    batch.legend.title = 'Seq data (batch)')
+
+
+david.limma.df <- data.frame(value = david.limma[ ,9], batch = david.batch)
+david.boxplot.limma <- box_plot_fun(data = david.limma.df, 
+                                   x = david.limma.df$batch, 
+                                   y = david.limma.df$value, 
+                                   title = 'OTU9 - rBE', 
+                                   batch.legend.title = 'Data seq (batch)')
+
+david.percentile.df <- data.frame(value = david.percentile[ ,9], batch = david.batch)
+david.boxplot.percentile <- box_plot_fun(data = david.percentile.df, 
+                                        x = david.percentile.df$batch, 
+                                        y = david.percentile.df$value, 
+                                        title = 'OTU9 - PN ', 
+                                        batch.legend.title = 'Seq data(batch)')
+
+david.svd.df <- data.frame(value = david.svd[ ,9], batch = david.batch)
+david.boxplot.svd <- box_plot_fun(data = david.svd.df, 
+                                 x = david.svd.df$batch, 
+                                 y = david.svd.df$value, 
+                                 title = 'OTU9 - SVD ', 
+                                 batch.legend.title = 'Seq data (batch)')
+
+
+grid.arrange(david.boxplot.before, david.boxplot.bmc, 
+             david.boxplot.combat, david.boxplot.limma, david.boxplot.percentile, 
+             david.boxplot.svd, ncol = 2)
+
+
+```
+#density plots per otu
+```{r}
+david.dens.before <- ggplot(david.before.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - before ', x = 'Value', fill = 'Seq data (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+# BMC
+david.dens.bmc <- ggplot(david.bmc.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - BMC', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# ComBat
+david.dens.combat <- ggplot(david.combat.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - ComBat ', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# removeBatchEffect 
+david.dens.limma <- ggplot(david.limma.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - rBE ', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# percentile normal
+david.dens.percentile <- ggplot(david.percentile.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - PN ', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# SVD
+david.dens.svd <- ggplot(david.svd.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  labs(title = 'OTU9 - SVD', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+grid.arrange(david.dens.before, david.dens.bmc, 
+             david.dens.combat, david.dens.limma, david.dens.percentile, 
+             david.dens.svd ,ncol = 2)
+```
+# P-values
+```{r}
+david.lm.before <- lm(david.clr[ ,9] ~ david.trt + david.batch)
+summary(david.lm.before)
+
+david.lm.bmc <- lm(david.bmc[ ,9] ~  david.trt + david.batch)
+summary(david.lm.bmc)
+
+david.lm.combat <- lm(david.combat[ ,9]  ~ david.trt + david.batch)
+summary(panc.lm.combat)
+
+panc.lm.limma <- lm(david.limma[ ,9] ~ david.trt + david.batch)
+summary(panc.lm.limma)
+
+david.lm.percentile <- lm(david.percentile[ ,9] ~ david.trt + david.batch)
+summary(david.lm.percentile)
+
+david.lm.svd <- lm(david.svd[ ,9] ~ david.trt + david.batch)
+summary(david.lm.svd)
+```
+#RLE plots
+```{r}
+david.batch_m <- david.batch[david.trt == 'main',]
+david.batch_n <- david.batch[david.trt == 'narcology',] 
+david.before_m <- david.clr[david.trt == 'main', ]
+david.before_n <- david.clr[david.trt == 'narcology', ] 
+# BMC
+ 
+
+
+david.bmc_m <- david.bmc[david.trt == 'main',]
+david.bmc_n <- david.bmc[david.trt == 'narcology',] 
+
+
+# ComBat
+david.combat_m <- david.combat[david.trt == 'main',]
+david.combat_n <- david.combat[david.trt == 'narcology',] 
+
+
+# rBE
+david.limma_m <- david.limma[david.trt == 'main',]
+david.limma_n <- david.limma[david.trt == 'narcology',] 
+
+# PN
+david.percentile_m <- david.percentile[david.trt == 'main',]
+david.percentile_n <- david.percentile[david.trt == 'narcology',] 
+
+# SVD
+david.svd_m <- david.svd[david.trt == 'main',]
+david.svd_n <- david.svd[david.trt == 'narcology',] 
+
+
+#FAbatch
+#panc.fa_t <- panc.fabatch[panc.gr == 'тяжелая степень', ] 
+#RleMicroRna2(object = t(panc.fa_t), batch = panc.batch_t, 
+             #maintitle = 'Panc: Fabacth (тяжелая степень)', title.cex = 1)
+
+```
+#rle before 
+
+```{r, fig.width=20, fig.height=10}
+RleMicroRna2(object = t(david.before_m), batch = david.batch_m,maintitle = 'David Before main')
+
+RleMicroRna2(object = t(david.before_n), batch = david.batch_n,maintitle =  'David Before narcology')
+```
+#rle  bmc
+```{r, fig.width=20, fig.height=10}
+RleMicroRna2(object = t(david.bmc_m), batch = david.batch_m,maintitle = 'David: bmc main')
+
+RleMicroRna2(object = t(david.bmc_n), batch = david.batch_n,maintitle = 'David: bmc narcology')
+
+```
+#rle combat
+```{r, fig.width=20, fig.height=10}
+RleMicroRna2(object = t(david.combat_m), batch = david.batch_m,
+             maintitle = 'David: combat (main)', title.cex = 1)
+RleMicroRna2(object = t(david.combat_n), batch = david.batch_n,maintitle = 'David: combat  narcology')
+
+```
+#rle limma (rBE)
+```{r, fig.width=20, fig.height=10}
+RleMicroRna2(object = t(david.limma_m ), batch = david.batch_m, 
+             maintitle = 'David: limma (main)', title.cex = 1)
+RleMicroRna2(object = t(david.limma_n), batch = david.batch_n,maintitle = 'David: limma  narcology')
+```
+#rle percentile
+```{r, fig.width=20, fig.height=10}
+RleMicroRna2(object = t(david.percentile_m), batch = david.batch_m, 
+             maintitle = 'David: percentile (main)', title.cex = 1)
+
+RleMicroRna2(object = t(david.percentile_n), batch = david.batch_n,maintitle = 'David: percentile   narcology')
+
+```
+#rle svd
+```{r, fig.width=20, fig.height=10}
+RleMicroRna2(object = t(david.svd_m), batch = david.batch_m, 
+             maintitle = 'David: svd (main)', title.cex = 1)
+RleMicroRna2(object = t(david.svd_n), batch = david.batch_n,maintitle = 'David: svd narcology')
+```
+
+
+```{r, fig.width=20, fig.height=20}
+#Combat
+#load phyloseq object
+dv_combat<- ps_david_clr
+otu_table(dv_combat) <- otu_table(david.combat,taxa_are_rows = F)
+ps_obj <- dv_combat
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('s_sec','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+combat.scale <- scale(dv_combat@otu_table, center = T, scale = T) 
+# scale on samples
+combat.scale <- scale(t(combat.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  (combat.scale), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='Combat correction')
+
+```
+
+```{r, fig.width=20, fig.height=10}
+#BMC
+dv_bmc<- ps_david_clr
+otu_table(dv_bmc) <- otu_table(david.bmc,taxa_are_rows = F)
+ps_obj <- dv_bmc
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('s_sec','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+bmc.scale <- scale(dv_bmc@otu_table, center = T, scale = T) 
+# scale on samples
+bmc.scale <- scale(t(bmc.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  (bmc.scale), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  #height = 40
+  # col= hmcols, 
+  # breaks = bk,
+  main='BMC correction')
+```
+
+```{r, fig.width=20, fig.height=10}
+#limma
+dv_limma<- ps_david_clr
+otu_table(dv_limma) <- otu_table(david.limma,taxa_are_rows = F)
+ps_obj <- dv_limma
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('s_sec','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+limma.scale <- scale(dv_limma@otu_table, center = T, scale = T) 
+# scale on samples
+limma.scale <- scale(t(limma.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( limma.scale, 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='Limma correction')
+
+```
+
+```{r, fig.width=20, fig.height=10}
+#svd
+dv_svd<- ps_david_clr
+otu_table(dv_svd) <- otu_table(david.svd,taxa_are_rows = F)
+ps_obj <- dv_svd
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('s_sec','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+limma.scale <- scale(dv_limma@otu_table, center = T, scale = T) 
+# scale on samples
+limma.scale <- scale(t(limma.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  (limma.scale), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='svd correction')
+
+```
+```{r, fig.width=20, fig.height=10}
+#percentile
+dv_pn<- ps_david_clr
+otu_table(dv_pn) <- otu_table(david.percentile,taxa_are_rows = F)
+ps_obj <- dv_pn
+#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('s_sec','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+pn.scale <- scale(dv_pn@otu_table, center = T, scale = T) 
+# scale on samples
+pn.scale <- scale(t(pn.scale), center = T, scale = T) 
+#dev.new(width=20, height=20)
+pheatmap( 
+  (pn.scale), 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 4, fontsize_col = 5,
+  fontsize = 12,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  height = 40,
+  # col= hmcols, 
+  # breaks = bk,
+  main='percentile correction')
+```
+#Linear model per variable
+```{r}
+#Linear model per variable
+#
+david.form <- ~ david.trt + david.batch
+david.info <- as.data.frame(cbind(rownames(david.clr),david.trt, david.batch))
+rownames(david.info) <- rownames(david.clr)
+
+# before
+david.varPart.before <- fitExtractVarPartModel(exprObj = t(david.clr), 
+                                              formula = david.form, 
+                                              data = david.info)
+
+# BMC
+david.varPart.bmc <- fitExtractVarPartModel(exprObj = t(david.bmc), 
+                                           formula = david.form, 
+                                           data = david.info)
+##fabacth
+#david.varPart.fab <- fitExtractVarPartModel(exprObj = t(panc.fabatch), 
+                                           #formula = panc.form, 
+                                           #data = panc.info)
+# combat
+david.varPart.combat <- fitExtractVarPartModel(exprObj = t(david.combat), 
+                                              formula = david.form, 
+                                              data = david.info)
+
+# removeBatchEffect
+david.varPart.limma <- fitExtractVarPartModel(exprObj = t(david.limma), 
+                                             formula = david.form, 
+                                             data = david.info)
+
+# percentile normalisation
+david.varPart.percentile <- fitExtractVarPartModel(exprObj = t(david.percentile), 
+                                                  formula = david.form, 
+                                                  data = david.info)
+
+# svd
+david.varPart.svd <- fitExtractVarPartModel(exprObj = t(david.svd), 
+                                           formula = david.form, 
+                                           data = david.info)
+# extract the variance of trt and batch
+# before
+david.varmat.before <- as.matrix(david.varPart.before[ ,1:2])
+# BMC
+david.varmat.bmc <- as.matrix(david.varPart.bmc[ ,1:2])
+# ComBat
+david.varmat.combat <- as.matrix(david.varPart.combat[ ,1:2])
+# removeBatchEffect
+david.varmat.limma <- as.matrix(david.varPart.limma[ ,1:2])
+# percentile normalisation
+david.varmat.percentile <- as.matrix(david.varPart.percentile[ ,1:2])
+# SVD
+david.varmat.svd <- as.matrix(david.varPart.svd[ ,1:2])
+#fabatch
+#panc.varmat.fab <- as.matrix(panc.varPart.fab[ ,1:2])
+# merge results
+david.variance <- c(as.vector(david.varmat.before), as.vector(david.varmat.bmc),
+                   as.vector(david.varmat.combat), as.vector(david.varmat.limma),
+                   as.vector(david.varmat.percentile), as.vector(david.varmat.svd))#,as.vector(panc.varmat.fab))
+
+# add batch, trt and methods info
+david.variance <- cbind(variance = david.variance, 
+                       Type = rep(c('Group', 'Batch'), each = ncol(david.clr)),
+                       method = rep(c('Before', 'BMC', 'ComBat', 'rBE', 
+                                      'PN', 'SVD'), each = 2*ncol(david.clr)))
+# reorder levels  
+david.variance <- as.data.frame(david.variance)
+david.variance$method <- factor(david.variance$method, 
+                               levels = unique(david.variance$method))
+david.variance$variance <- as.numeric(as.character(david.variance$variance))
+
+ggplot(david.variance, aes(x = Type, y = variance, fill = Type)) + 
+  geom_boxplot() + facet_grid(cols = vars(method)) + theme_bw() + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), 
+        strip.text = element_text(size = 12), panel.grid = element_blank(), 
+        axis.text = element_text(size = 12), axis.title = element_text(size = 15), 
+        legend.title = element_text(size = 15), legend.text = element_text(size = 12)) + 
+  labs(x = 'Type', y = 'Proportion Variance', name = 'Type') + ylim(0,1)
+
+```
+# The pRDA method is a multivariate method to assess globally the effect of batch and treatment (two separate models
+```{r}
+
+david.data.design <- numeric()
+david.data.design$s_sec <- david.trt
+david.data.design$batch <- david.batch
+
+# before
+# conditioning on a batch effect
+david.rda.before1 <- rda(david.clr ~ s_sec + Condition(batch), 
+                        data = david.data.design)
+david.rda.before2 <- rda(david.clr ~ batch + Condition(s_sec), 
+                        data = david.data.design)
+
+# amount of variance
+david.rda.bat_prop.before <- david.rda.before1$pCCA$tot.chi*100/david.rda.before1$tot.chi
+david.rda.trt_prop.before <- david.rda.before2$pCCA$tot.chi*100/david.rda.before2$tot.chi
+
+# BMC
+# conditioning on a batch effect
+david.rda.bmc1 <- rda(david.bmc ~ s_sec + Condition(batch), 
+                     data = david.data.design)
+david.rda.bmc2 <- rda(david.bmc ~ batch + Condition(s_sec), 
+                     data = david.data.design)
+
+# amount of variance
+david.rda.bat_prop.bmc <- david.rda.bmc1$pCCA$tot.chi*100/david.rda.bmc1$tot.chi
+david.rda.trt_prop.bmc <- david.rda.bmc2$pCCA$tot.chi*100/david.rda.bmc2$tot.chi
+
+
+# combat
+# conditioning on a batch effect
+david.rda.combat1 <- rda(david.combat ~ s_sec + Condition(batch), 
+                        data = david.data.design)
+david.rda.combat2 <- rda(david.combat ~ batch + Condition(s_sec), 
+                        data = david.data.design)
+
+# amount of variance
+david.rda.bat_prop.combat <- david.rda.combat1$pCCA$tot.chi*100/david.rda.combat1$tot.chi
+david.rda.trt_prop.combat <- david.rda.combat2$pCCA$tot.chi*100/david.rda.combat2$tot.chi
+
+
+# limma
+# conditioning on a batch effect
+david.rda.limma1 <- rda(david.limma ~ s_sec + Condition(batch), 
+                       data = david.data.design)
+david.rda.limma2 <- rda(david.limma ~ batch + Condition(s_sec), 
+                       data = david.data.design)
+
+# amount of variance
+david.rda.bat_prop.limma <- david.rda.limma1$pCCA$tot.chi*100/david.rda.limma1$tot.chi
+david.rda.trt_prop.limma <- david.rda.limma2$pCCA$tot.chi*100/david.rda.limma2$tot.chi
+
+
+# percentile
+# conditioning on a batch effect
+david.rda.percentile1 <- rda(david.percentile ~ s_sec + Condition(batch), 
+                            data = david.data.design)
+david.rda.percentile2 <- rda(david.percentile ~ batch + Condition(s_sec), 
+                            data = david.data.design)
+
+# amount of variance
+david.rda.bat_prop.percentile <- david.rda.percentile1$pCCA$tot.chi*100/david.rda.percentile1$tot.chi
+david.rda.trt_prop.percentile <- david.rda.percentile2$pCCA$tot.chi*100/david.rda.percentile2$tot.chi
+
+
+# SVD
+# conditioning on a batch effect
+david.rda.svd1 <- rda(david.svd ~ s_sec + Condition(batch), 
+                     data = david.data.design)
+david.rda.svd2 <- rda(david.svd ~ batch + Condition(s_sec), 
+                     data = david.data.design)
+
+# amount of variance
+david.rda.bat_prop.svd <- david.rda.svd1$pCCA$tot.chi*100/david.rda.svd1$tot.chi
+david.rda.trt_prop.svd <- david.rda.svd2$pCCA$tot.chi*100/david.rda.svd2$tot.chi
+
+
+# Fabatch
+# conditioning on a batch effect
+#david.rda.fabatch1 <- rda(david.fabatch ~ s_sec + Condition(batch), 
+                         #data = david.data.design)
+#david.rda.fabatch2 <- rda(david.fabatch ~ batch + Condition(s_sec), 
+                         #data = pdavid.data.design)
+
+# amount of variance
+#david.rda.bat_prop.fabatch <- david.rda.fabatch1$pCCA$tot.chi*100/david.rda.fabatch1$tot.chi
+#david.rda.trt_prop.fabatch <- david.rda.fabatch2$pCCA$tot.chi*100/david.rda.fabatch2$tot.chi
+
+
+
+#We now represent the amount of variance explained by batch and treatment estimated with pRDA:
+
+# proportion
+david.rda.prop.before <- c(david.rda.bat_prop.before, 
+                           david.rda.trt_prop.before)
+david.rda.prop.bmc <- c(david.rda.bat_prop.bmc, 
+                        david.rda.trt_prop.bmc)
+david.rda.prop.combat <- c(david.rda.bat_prop.combat, 
+                           david.rda.trt_prop.combat)
+david.rda.prop.limma <- c(david.rda.bat_prop.limma, 
+                          david.rda.trt_prop.limma)
+david.rda.prop.percentile <- c(david.rda.bat_prop.percentile, 
+                               david.rda.trt_prop.percentile)
+david.rda.prop.svd <- c(david.rda.bat_prop.svd, 
+                        david.rda.trt_prop.svd)
+#david.rda.prop.fabatch <- c(panc.rda.bat_prop.fabatch, 
+                           #panc.rda.trt_prop.fabatch)
+
+# merge results
+david.rda.prop.val <- c(david.rda.prop.before, david.rda.prop.bmc, 
+                        david.rda.prop.combat, david.rda.prop.limma, 
+                        david.rda.prop.percentile, david.rda.prop.svd)#, panc.rda.prop.fabatch)
+
+# add batch, trt and method info
+david.rda.prop <- data.frame(prop = david.rda.prop.val, 
+                            prop.r = round(david.rda.prop.val, 2), 
+                            Method = rep(c('Before', 'BMC', 'ComBat', 
+                                           'rBE', 'PN', 'SVD'), each = 2), 
+                            Type = rep(c('Batch', 's_sec'), 6))
+
+# reorder levels
+david.rda.prop$Method <- factor(david.rda.prop$Method, 
+                               levels = unique(david.rda.prop$Method))
+
+ggplot(data = david.rda.prop, aes(x = Method, y = prop, fill = Type)) + 
+  geom_bar(stat = "identity", position = 'dodge', colour = 'black') + 
+  geom_text(data = david.rda.prop, aes(Method, prop + 2.5, label = prop.r), 
+            position = position_dodge(width = 0.9), size = 3) + theme_bw() + 
+  labs(y = "Variance explained (%)") + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1), 
+        panel.grid = element_blank(), axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 15), legend.title = element_text(size = 15),
+        legend.text = element_text(size = 12)) + ylim(0,100)
+
+
+```
+

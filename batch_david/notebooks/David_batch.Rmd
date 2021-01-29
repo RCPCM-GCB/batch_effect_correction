@@ -37,14 +37,14 @@ library(matrixStats)
 library(tibble)
 library(HTSSIP)
 #assnake helpers
-source('./help/helpers.R')
+source('../help/helpers.R')
 #their helpers
-source('./batc_panc/DATA/exp/helpers.R')
+source('../../batc_panc/DATA/exp/helpers.R')
 
 ```
 ```{r}
 #Import data
-david <- readRDS('./data_david/psasv_min_sample_depth1750_minprev39_strict_min_asv_depth10.rds')
+david <- readRDS('../data_david/psasv_min_sample_depth1750_minprev39_strict_min_asv_depth10.rds')
 ps_meta <- as(sample_data(david), 'data.frame')
 ps_obj <- david
 otu_matrix <- as(otu_table(ps_obj), 'matrix')

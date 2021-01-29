@@ -36,8 +36,10 @@ library(ggpubr)
 library(matrixStats)
 library(tibble)
 library(HTSSIP)
-source('/Users/basilews/phylo/helpers.R')
-source('/Users/basilews/phylo/batc_panc/DATA/exp/helpers.R')
+#assnake helpers
+source('../help/helpers.R')
+#their helpers
+source('../batc_panc/DATA/exp/helpers.R')
 
 ```
 ```{r}

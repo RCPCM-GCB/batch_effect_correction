@@ -36,17 +36,29 @@ library(ggpubr)
 library(matrixStats)
 library(tibble)
 library(HTSSIP)
-#assnake helpers
-source('../help/helpers.R')
-#their helpers
-source('../../batc_panc/DATA/exp/helpers.R')
+library(RColorBrewer)
+library(PLSDAbatch)
+library(PathoStat)
+library(venn)
+source('./help/helpers.R')
+source('./help/add_fun.R')
+
 
 ```
-```{r}
 #Import data
-david <- readRDS('../data_david/psasv_min_sample_depth1750_minprev39_strict_min_asv_depth10.rds')
+```{r}
+david <- readRDS('/Users/basilews/phylo/batch_david/data_david/psasv_min_sample_depth1750_minprev39_strict_min_asv_depth10.rds')
 ps_meta <- as(sample_data(david), 'data.frame')
-ps_obj <- david
+```
+#taxa_name_func 
+```{r}
+taxa_name_func <- function(x) {paste0(x['Phylum'], '.c__' , substr(x['Class'], 1, 3), '.o__' , substr(x['Order'], 1, 5), '.f__' , substr(x['Family'], 1, 3), '.g__' , gsub('/', '', gsub("-", "", x['Genus'])))}
+```
+#aglomerate to genus level - 787rows 185 cols(Genus level)
+```{r}
+david_genus <- tax_glom(david,taxrank = "Genus")
+
+ps_obj <- david_genus
 otu_matrix <- as(otu_table(ps_obj), 'matrix')
 taxa_matrix <- as(tax_table(ps_obj), 'matrix')
 taxa_matrix_good_names <- apply(taxa_matrix, MARGIN=1, taxa_name_func)
@@ -56,73 +68,65 @@ rownames(taxa_matrix) <- taxa_matrix_good_names
 count_mtrx_genus <- otu_matrix[, !duplicated(colnames(otu_matrix))]
 taxa_genus <- taxa_matrix[!duplicated(rownames(taxa_matrix)),]
 
-david <- phyloseq(otu_table(count_mtrx_genus, taxa_are_rows=FALSE)
-                  ,tax_table(taxa_genus) 
-                  ,sample_data(ps_meta)
+david_genus <- phyloseq(otu_table(count_mtrx_genus, taxa_are_rows=FALSE),tax_table(taxa_genus),sample_data(ps_meta)
 )
 
 ```
+
 #remove 'repeat' cases from data
 ```{r}
-#remove 'repeat' cases from data
-table(david@sam_data$s_sec)
+table(david_genus@sam_data$s_sec)
 meta <- subset(david@sam_data,s_sec == 'repeat')
 b <- row.names(meta)
 '%ni%' <- Negate('%in%')
-david <- subset_samples(david, running_id %ni% meta$running_id)
-table(david@sam_data$s_sec)
+david_genus <- subset_samples(david_genus, running_id %ni% meta$running_id)
+table(david_genus@sam_data$s_sec)
+dim(david_genus@otu_table)
 ```
 #preprocessing data
 ```{r}
-
-otu.david <- as(otu_table(david), 'matrix')
-dim(otu.david)
+otu.david <- as(otu_table(david_genus), 'matrix')
 otu.david.keep <- which(colSums(otu.david)*100/(sum(colSums(otu.david))) > 0.01)
 otu.david.keep <- otu.david[, otu.david.keep]
-dim(otu.david.keep)
 otu.david.keep<- otu.david.keep + 1
 david.clr <- logratio.transfo(otu.david.keep, logratio = 'CLR')
+dim(david.clr)
 class(david.clr) <- 'matrix' 
 david@sam_data$batch <- as.character(david@sam_data$batch)
-david@sam_data$batch
-david.trt <- as.factor(david@sam_data$s_sec)
-david.batch <- as.factor(david@sam_data$batch)
+david.trt <- as.factor(david_genus@sam_data$s_sec)
+david.batch <- as.factor(david_genus@sam_data$batch)
 ```
 #PCA before
-```{r}
-#PCA 
-
+```{r,fig.width=5, fig.height=5}
 david.pca.before <- pca(david.clr, ncomp = 3)
 Scatter_Density(data = david.pca.before$variates$X, batch = david.batch, 
                 trt = david.trt, expl.var = david.pca.before$explained_variance, 
                 xlim = c(-20,20), ylim = c(-20,20), 
                 batch.legend.title = '(batch)', 
                 trt.legend.title = ' (trt)', 
-                title = 'Before batch effect correction')
+                title = 'David before batch effect correction')
 ```
 #Pheatmap before
-```{r}
-
-
-ps_david_clr <- david
+```{r, fig.width=15, fig.height=8}
+ps_david_clr <- david_genus
 otu_table(ps_david_clr) <- otu_table(david.clr,taxa_are_rows = F)
 ps_obj <- ps_david_clr
-#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
 # prepare metadata
 ps_obj_meta <- sample_data(ps_obj)
 cols_of_interest =c('s_sec','batch')
 meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
 meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
 ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
-all.scale <- scale(ps_david_clr@otu_table, center = T, scale = T) 
-# scale on samples
-all.scale <- scale(t(all.scale), center = T, scale = T) 
+annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
+#scale on samples
+data.scale <- scale(ps_david_clr@otu_table, center = T, scale = T) 
+data.scale <- scale(t(data.scale), center = T, scale = T) 
 pheatmap( 
-  ((all.scale)), 
+  ((data.scale)), 
   cluster_rows = F, 
   cluster_cols = T,
-  fontsize_row = 4, fontsize_col = 5,
-  fontsize = 12,
+  fontsize_row = 10, fontsize_col = 10,
+  fontsize = 25,
   clustering_distance_rows = 'euclidean',
   clustering_method = 'ward.D',
   treeheight_row = 15,
@@ -130,38 +134,44 @@ pheatmap(
   annotation_colors = annotation_colors,
   # col= hmcols, 
   # breaks = bk,
-  main='before correction')
+  main='David clr norm. before correction')
+
 ```
 #RLE before
-```{r, fig.width=20, fig.height=10}
+```{r, fig.width=10, fig.height=6}
 david.batch_m <- david.batch[david.trt == 'main']
 david.batch_n <- david.batch[david.trt == 'narcology'] 
 david.before_m <- david.clr[david.trt == 'main', ]
 david.before_n <- david.clr[david.trt == 'narcology', ] 
 
+RleMicroRna2(object = t(david.before_m), batch = david.batch_m,maintitle = 'RLE before main')
 
-#par(mfrow = c(1,3))
-RleMicroRna2(object = t(david.before_m), batch = david.batch_m, 
-             maintitle = 'main')
-
-RleMicroRna2(object = t(david.before_n), batch = david.batch_n,maintitle = 'narcology')
+RleMicroRna2(object = t(david.before_n), batch = david.batch_n,maintitle = 'RLE before narcology')
 
 ```
-#Correcting batch effects combat
+#Correcting batch effects :
 ```{r}
-#ComBat
-david.combat <- t(ComBat(t(david.clr), batch = david.batch, 
-                        mod = david.mod, par.prior = F, prior.plots = F))
+data <- david.clr
+batch <- as.factor(as.numeric(david.batch))
+trt <- as.factor(as.numeric(david.trt))
+david.mod <- model.matrix( ~ david.trt)
 
 ```
-#Correcting batch effects removeBatchEffect
-
+#BMC (batch mean centering)
 ```{r}
-
-david.limma <- t(removeBatchEffect(t(david.clr), batch = david.batch, 
-                                  design = david.mod))
+david.b1 <- scale(data[david.batch == 'B3', ], center = TRUE, scale = FALSE)
+david.b2 <- scale(data[david.batch == 'B4', ], center = TRUE, scale = FALSE)
+david.b3 <- scale(data[david.batch == 'B6', ], center = TRUE, scale = FALSE)
+david.bmc <- rbind(david.b1, david.b2, david.b3)
+david.bmc <- david.bmc[rownames(data), ]
 ```
-#Correcting batch effects FAbatch ??? выдает ошибку 
+
+#removeBatchEffect LIMMA
+```{r}
+david.limma <- t(removeBatchEffect(t(data), batch = batch, 
+                              design = david.mod))
+```
+#FAbatch ??? выдает ошибку max(table(batch)) >= ncol(data)  
 ```{r}
 #FAbatch ???
 david.batchf <- as.factor(as.numeric(david.batch))
@@ -171,33 +181,26 @@ dim(david.clr)
 david.fabatch.obj <- fabatch(x = david.clr, 
                           y = david.trtf, 
                           batch = david.batchf)
-david.fabatch <- david.fabatch.obj$xadj
 ```
-#Correcting batch effects Percentile normalisation
+# Percentile normalisation
 ```{r}
-#Percentile normalisation
-david.tss <- t(apply(otu.david.keep, 1, function(x){x/sum(x)}))
-david.percentile <- percentile_norm(data = david.tss, batch = david.batch,trt = david.trt)
+tss <- t(apply(otu.david.keep, 1, function(x){x/sum(x)}))
+david.percentile <- percentile_norm(data = tss, batch = batch,trt = trt)
 ```
 
-#Correcting batch effects BMC
+#Combat
 ```{r}
-david.mod <- model.matrix( ~ david.trt)
-#BMC (batch mean centering)
-david.b1 <- scale(david.clr[david.batch == 'B3', ], center = TRUE, scale = FALSE)
-david.b2 <- scale(david.clr[david.batch == 'B4', ], center = TRUE, scale = FALSE)
-david.b3 <- scale(david.clr[david.batch == 'B6', ], center = TRUE, scale = FALSE)
-david.bmc <- rbind(david.b1, david.b2, david.b3)
-david.bmc <- david.bmc[rownames(david.clr), ]
+david.combat <- t(ComBat(t(data), batch = batch, 
+                        mod = david.mod, par.prior = F, prior.plots = F))
+
 
 ```
-#Correcting batch effects SVD-based method
+#SVD-based method
 ```{r}
 
-
-david.sd <- apply(david.clr, 2, sd) # calculate standard deviation
-david.mean <- apply(david.clr, 2, mean) # calculate mean
-david.X <- scale(david.clr, center = T, scale = T) # center and scale
+david.sd <- apply(data, 2, sd) # calculate standard deviation
+david.mean <- apply(data, 2, mean) # calculate mean
+david.X <- scale(data, center = T, scale = T) # center and scale
 
 david.m <- crossprod(david.X) # generate a square matrix
 david.m.svd <- svd(david.m) # SVD 
@@ -220,8 +223,14 @@ for(i in 1:ncol(david.svd.defl.matrix1)){
 }
 
 ```
-#Principal component analysis (PCA) with density plot per component
+#PLSDA for Batch Effect Correction(for balanced data batch x treatment)
 ```{r}
+david_plsda <- PLSDA_batch(data, trt, batch, ncomp.trt = 2, ncomp.bat = 3)
+david.plsda <- david_plsda$X.nobatch #batch corrected data
+```
+
+#Principal component analysis (PCA) with density plot per component
+```{r,fig.width=10, fig.height=5}
 
 david.pca.before <- pca(david.clr, ncomp = 3)
 david.pca.bmc <- pca(david.bmc, ncomp = 3)
@@ -229,6 +238,7 @@ david.pca.combat <- pca(david.combat, ncomp = 3)
 david.pca.limma <- pca(david.limma, ncomp = 3)
 david.pca.percentile <- pca(david.percentile, ncomp = 3)
 david.pca.svd <- pca(david.svd, ncomp = 3)
+david.pca.plsda <- pca(david.plsda, ncomp = 3)
 #david.pca.fa <- pca(panc.fabatch, ncomp = 3)
 #panc.pca.plot.fa = Scatter_Density(data = panc.pca.fa$variates$X, batch = panc.batch, 
                                    #trt = panc.gr, expl.var = panc.pca.fa$explained_variance,
@@ -274,140 +284,166 @@ david.pca.plot.svd = Scatter_Density(data = david.pca.svd$variates$X, batch = da
                                     batch.legend.title = '(batch)', 
                                     trt.legend.title = '(trt)', 
                                     title = 'SVD Correction')
+
+david.pca.plot.pslda = Scatter_Density(data = david.pca.plsda$variates$X, batch = david.batch, 
+                                    trt = david.trt, expl.var = david.pca.plsda$explained_variance, 
+                                    xlim = c(-10,10), ylim = c(-10,10), 
+                                    batch.legend.title = '(batch)', 
+                                    trt.legend.title = '(trt)', 
+                                    title = 'PSLDA Correction')
+
 grid.arrange(david.pca.plot.before, david.pca.plot.percentile, 
-             david.pca.plot.svd,ncol = 2)#pdavid.pca.plot.fa, ncol = 2)
+             david.pca.plot.svd,david.pca.plot.pslda,ncol = 2)#pdavid.pca.plot.fa, ncol = 2)
 
 ```
 
 
 #box plots per otu
-```{r}
-david.before.df <- data.frame(value = david.clr[ ,9], batch = david.batch)
+```{r, fig.width=10, fig.height=5}
+david.before.df <- data.frame(value = david.clr[ ,1], batch = david.batch)
 david.boxplot.before <- box_plot_fun(data = david.before.df, 
                                     x = david.before.df$batch,
                                     y = david.before.df$value, 
-                                    title = 'OTU9 - before', 
+                                    title = 'g__Akkermansia - before', 
                                     batch.legend.title = 'Seq data (batch)')
 
-david.bmc.df <- data.frame(value = david.bmc[ ,9], batch = david.batch)
+david.bmc.df <- data.frame(value = david.bmc[ ,1], batch = david.batch)
 david.boxplot.bmc <- box_plot_fun(data = david.bmc.df, 
                                  x = david.bmc.df$batch,
                                  y = david.bmc.df$value, 
-                                 title = 'OTU9 - BMC', 
+                                 title = 'g__Akkermansia- BMC', 
                                  batch.legend.title = 'Seq data (batch)')
 
 
-david.combat.df <- data.frame(value = david.combat[ ,9], batch = david.batch)
+david.combat.df <- data.frame(value = david.combat[ ,1], batch = david.batch)
 david.boxplot.combat <- box_plot_fun(data = david.combat.df, 
                                     x = david.combat.df$batch, 
                                     y = david.combat.df$value, 
-                                    title = 'OTU9 - ComBat',
+                                    title = 'g__Akkermansia - ComBat',
                                     batch.legend.title = 'Seq data (batch)')
 
 
-david.limma.df <- data.frame(value = david.limma[ ,9], batch = david.batch)
+david.limma.df <- data.frame(value = david.limma[ ,1], batch = david.batch)
 david.boxplot.limma <- box_plot_fun(data = david.limma.df, 
                                    x = david.limma.df$batch, 
                                    y = david.limma.df$value, 
-                                   title = 'OTU9 - rBE', 
+                                   title = 'g__Akkermansia - rBE', 
                                    batch.legend.title = 'Data seq (batch)')
 
-david.percentile.df <- data.frame(value = david.percentile[ ,9], batch = david.batch)
+david.percentile.df <- data.frame(value = david.percentile[ ,1], batch = david.batch)
 david.boxplot.percentile <- box_plot_fun(data = david.percentile.df, 
                                         x = david.percentile.df$batch, 
                                         y = david.percentile.df$value, 
-                                        title = 'OTU9 - PN ', 
+                                        title = 'g__Akkermansia - PN ', 
                                         batch.legend.title = 'Seq data(batch)')
 
-david.svd.df <- data.frame(value = david.svd[ ,9], batch = david.batch)
+david.svd.df <- data.frame(value = david.svd[ ,1], batch = david.batch)
 david.boxplot.svd <- box_plot_fun(data = david.svd.df, 
                                  x = david.svd.df$batch, 
                                  y = david.svd.df$value, 
-                                 title = 'OTU9 - SVD ', 
+                                 title = 'g__Akkermansia - SVD ', 
+                                 batch.legend.title = 'Seq data (batch)')
+
+david.pslda.df <- data.frame(value = david.plsda[ ,1], batch = david.batch)
+david.boxplot.pslda <- box_plot_fun(data = david.pslda.df, 
+                                 x = david.pslda.df$batch, 
+                                 y = david.pslda.df$value, 
+                                 title = 'g__Akkermansia - PSLDA ', 
                                  batch.legend.title = 'Seq data (batch)')
 
 
 grid.arrange(david.boxplot.before, david.boxplot.bmc, 
-             david.boxplot.combat, david.boxplot.limma, david.boxplot.percentile, 
-             david.boxplot.svd, ncol = 2)
+             david.boxplot.combat, david.boxplot.limma, ncol = 2)
+grid.arrange(david.boxplot.before, david.boxplot.percentile, 
+             david.boxplot.svd,david.boxplot.pslda, ncol = 2)
+
 
 
 ```
 #density plots per otu
-```{r}
+```{r, fig.width=10, fig.height=5}
 david.dens.before <- ggplot(david.before.df, aes(x = value, fill = batch)) + 
-  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
-  labs(title = 'OTU9 - before ', x = 'Value', fill = 'Seq data (batch)') + 
+  geom_density(alpha = 0.3) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'g__Akkermansia - before ', x = 'Value', fill = 'Seq data (batch)') + 
   theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
                      panel.grid = element_blank())
 
 # BMC
 david.dens.bmc <- ggplot(david.bmc.df, aes(x = value, fill = batch)) + 
-  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
-  labs(title = 'OTU9 - BMC', x = 'Value', fill = 'Seq data  (batch)') + 
+  geom_density(alpha = 0.3) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'g__Akkermansia - BMC', x = 'Value', fill = 'Seq data  (batch)') + 
   theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
                      panel.grid = element_blank())
 
 
 # ComBat
 david.dens.combat <- ggplot(david.combat.df, aes(x = value, fill = batch)) + 
-  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
-  labs(title = 'OTU9 - ComBat ', x = 'Value', fill = 'Seq data  (batch)') + 
+  geom_density(alpha = 0.3) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'g__Akkermansia - ComBat ', x = 'Value', fill = 'Seq data  (batch)') + 
   theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
                      panel.grid = element_blank())
 
 
 # removeBatchEffect 
 david.dens.limma <- ggplot(david.limma.df, aes(x = value, fill = batch)) + 
-  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
-  labs(title = 'OTU9 - rBE ', x = 'Value', fill = 'Seq data  (batch)') + 
+  geom_density(alpha = 0.3) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'g__Akkermansia - rBE ', x = 'Value', fill = 'Seq data  (batch)') + 
   theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
                      panel.grid = element_blank())
 
 
 # percentile normal
 david.dens.percentile <- ggplot(david.percentile.df, aes(x = value, fill = batch)) + 
-  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
-  labs(title = 'OTU9 - PN ', x = 'Value', fill = 'Seq data  (batch)') + 
+  geom_density(alpha = 0.3) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'g__Akkermansia - PN ', x = 'Value', fill = 'Seq data  (batch)') + 
   theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
                      panel.grid = element_blank())
 
 
 # SVD
 david.dens.svd <- ggplot(david.svd.df, aes(x = value, fill = batch)) + 
-  geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
-  labs(title = 'OTU9 - SVD', x = 'Value', fill = 'Seq data  (batch)') + 
+  geom_density(alpha = 0.3) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'g__Akkermansia - SVD', x = 'Value', fill = 'Seq data  (batch)') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+david.dens.pslda <- ggplot(david.pslda.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.3) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'g__Akkermansia - PSLDA', x = 'Value', fill = 'Seq data  (batch)') + 
   theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
                      panel.grid = element_blank())
 
 grid.arrange(david.dens.before, david.dens.bmc, 
              david.dens.combat, david.dens.limma, david.dens.percentile, 
-             david.dens.svd ,ncol = 2)
+             david.dens.svd ,david.dens.pslda,ncol = 3)
 ```
 # P-values
 ```{r}
-david.lm.before <- lm(david.clr[ ,9] ~ david.trt + david.batch)
+david.lm.before <- lm(david.clr[ ,1] ~ david.trt + david.batch)
 summary(david.lm.before)
 
-david.lm.bmc <- lm(david.bmc[ ,9] ~  david.trt + david.batch)
+david.lm.bmc <- lm(david.bmc[ ,1] ~  david.trt + david.batch)
 summary(david.lm.bmc)
 
-david.lm.combat <- lm(david.combat[ ,9]  ~ david.trt + david.batch)
-summary(panc.lm.combat)
+david.lm.combat <- lm(david.combat[ ,1]  ~ david.trt + david.batch)
+summary(david.lm.combat)
 
-panc.lm.limma <- lm(david.limma[ ,9] ~ david.trt + david.batch)
+panc.lm.limma <- lm(david.limma[ ,1] ~ david.trt + david.batch)
 summary(panc.lm.limma)
 
-david.lm.percentile <- lm(david.percentile[ ,9] ~ david.trt + david.batch)
+david.lm.percentile <- lm(david.percentile[ ,1] ~ david.trt + david.batch)
 summary(david.lm.percentile)
 
-david.lm.svd <- lm(david.svd[ ,9] ~ david.trt + david.batch)
+david.lm.svd <- lm(david.svd[ ,1] ~ david.trt + david.batch)
 summary(david.lm.svd)
+
+david.lm.pslda <- lm(david.plsda[ ,1] ~ david.trt + david.batch)
+summary(david.lm.pslda)
 ```
 #RLE plots
 ```{r}
-david.batch_m <- david.batch[david.trt == 'main',]
-david.batch_n <- david.batch[david.trt == 'narcology',] 
+david.batch_m <- david.batch[david.trt == 'main']
+david.batch_n <- david.batch[david.trt == 'narcology'] 
 david.before_m <- david.clr[david.trt == 'main', ]
 david.before_n <- david.clr[david.trt == 'narcology', ] 
 # BMC
@@ -435,7 +471,9 @@ david.percentile_n <- david.percentile[david.trt == 'narcology',]
 david.svd_m <- david.svd[david.trt == 'main',]
 david.svd_n <- david.svd[david.trt == 'narcology',] 
 
-
+# PLSDA
+david.plsda_m <- david.plsda[david.trt == 'main',]
+david.plsda_n <- david.plsda[david.trt == 'narcology',]
 #FAbatch
 #panc.fa_t <- panc.fabatch[panc.gr == 'тяжелая степень', ] 
 #RleMicroRna2(object = t(panc.fa_t), batch = panc.batch_t, 
@@ -444,104 +482,107 @@ david.svd_n <- david.svd[david.trt == 'narcology',]
 ```
 #rle before 
 
-```{r, fig.width=20, fig.height=10}
+```{r, fig.width=15, fig.height=10}
 RleMicroRna2(object = t(david.before_m), batch = david.batch_m,maintitle = 'David Before main')
 
 RleMicroRna2(object = t(david.before_n), batch = david.batch_n,maintitle =  'David Before narcology')
 ```
 #rle  bmc
-```{r, fig.width=20, fig.height=10}
+```{r, fig.width=15, fig.height=10}
 RleMicroRna2(object = t(david.bmc_m), batch = david.batch_m,maintitle = 'David: bmc main')
 
 RleMicroRna2(object = t(david.bmc_n), batch = david.batch_n,maintitle = 'David: bmc narcology')
 
 ```
 #rle combat
-```{r, fig.width=20, fig.height=10}
+```{r, fig.width=15, fig.height=10}
 RleMicroRna2(object = t(david.combat_m), batch = david.batch_m,
              maintitle = 'David: combat (main)', title.cex = 1)
 RleMicroRna2(object = t(david.combat_n), batch = david.batch_n,maintitle = 'David: combat  narcology')
 
 ```
 #rle limma (rBE)
-```{r, fig.width=20, fig.height=10}
+```{r, fig.width=15, fig.height=10}
 RleMicroRna2(object = t(david.limma_m ), batch = david.batch_m, 
              maintitle = 'David: limma (main)', title.cex = 1)
 RleMicroRna2(object = t(david.limma_n), batch = david.batch_n,maintitle = 'David: limma  narcology')
 ```
 #rle percentile
-```{r, fig.width=20, fig.height=10}
+```{r, fig.width=15, fig.height=10}
 RleMicroRna2(object = t(david.percentile_m), batch = david.batch_m, 
              maintitle = 'David: percentile (main)', title.cex = 1)
 
 RleMicroRna2(object = t(david.percentile_n), batch = david.batch_n,maintitle = 'David: percentile   narcology')
 
 ```
-#rle svd
-```{r, fig.width=20, fig.height=10}
+```{r, fig.width=15, fig.height=10}
 RleMicroRna2(object = t(david.svd_m), batch = david.batch_m, 
              maintitle = 'David: svd (main)', title.cex = 1)
 RleMicroRna2(object = t(david.svd_n), batch = david.batch_n,maintitle = 'David: svd narcology')
 ```
+#rle PLSDA
+```{r, fig.width=15, fig.height=10}
+
+RleMicroRna2(object = t(david.plsda_m), batch = david.batch_m, 
+             maintitle = 'David: PLSDA (main)', title.cex = 1)
+RleMicroRna2(object = t(david.plsda_n), batch = david.batch_n,maintitle = 'David: PLSDA narcology')
+```
 
 
-```{r, fig.width=20, fig.height=20}
+#pheatmaps:
 #Combat
-#load phyloseq object
-dv_combat<- ps_david_clr
-otu_table(dv_combat) <- otu_table(david.combat,taxa_are_rows = F)
-ps_obj <- dv_combat
-#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+```{r, fig.width=15, fig.height=8}
+
+combat_genus<- ps_david_clr
+otu_table(combat_genus) <- otu_table(david.combat,taxa_are_rows = F)
+ps_obj <- combat_genus
 # prepare metadata
 ps_obj_meta <- sample_data(ps_obj)
 cols_of_interest =c('s_sec','batch')
 meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
 meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
 ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
-combat.scale <- scale(dv_combat@otu_table, center = T, scale = T) 
-# scale on samples
-combat.scale <- scale(t(combat.scale), center = T, scale = T) 
-#dev.new(width=20, height=20)
+annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
+data.scale <- scale(combat_genus@otu_table, center = T, scale = T) 
+data.scale <- scale(t(data.scale), center = T, scale = T) 
 pheatmap( 
-  (combat.scale), 
+  (data.scale), 
   cluster_rows = F, 
   cluster_cols = T,
-  fontsize_row = 4, fontsize_col = 5,
-  fontsize = 12,
+  fontsize_row = 12, fontsize_col = 10,
+  fontsize = 25,
   clustering_distance_rows = 'euclidean',
   clustering_method = 'ward.D',
   treeheight_row = 15,
   annotation_col = meta_for_heatmap,
   annotation_colors = annotation_colors,
-  height = 40,
   # col= hmcols, 
   # breaks = bk,
   main='Combat correction')
 
 ```
-
-```{r, fig.width=20, fig.height=10}
 #BMC
-dv_bmc<- ps_david_clr
-otu_table(dv_bmc) <- otu_table(david.bmc,taxa_are_rows = F)
-ps_obj <- dv_bmc
-#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
-# prepare metadata
+```{r, fig.width=15, fig.height=8}
+
+bmc_genus<- ps_david_clr
+otu_table(bmc_genus) <- otu_table(david.bmc,taxa_are_rows = F)
+ps_obj <- bmc_genus
 ps_obj_meta <- sample_data(ps_obj)
 cols_of_interest =c('s_sec','batch')
 meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
 meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
 ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
-bmc.scale <- scale(dv_bmc@otu_table, center = T, scale = T) 
-# scale on samples
-bmc.scale <- scale(t(bmc.scale), center = T, scale = T) 
+# scale samples
+data.scale <- scale(bmc_genus@otu_table, center = T, scale = T) 
+data.scale <- scale(t(data.scale), center = T, scale = T) 
 #dev.new(width=20, height=20)
 pheatmap( 
-  (bmc.scale), 
+  (data.scale), 
   cluster_rows = F, 
   cluster_cols = T,
-  fontsize_row = 4, fontsize_col = 5,
-  fontsize = 12,
+  fontsize_row = 10, fontsize_col = 10,
+  fontsize = 25,
   clustering_distance_rows = 'euclidean',
   clustering_method = 'ward.D',
   treeheight_row = 15,
@@ -551,108 +592,157 @@ pheatmap(
   # col= hmcols, 
   # breaks = bk,
   main='BMC correction')
-```
 
-```{r, fig.width=20, fig.height=10}
+```
 #limma
-dv_limma<- ps_david_clr
-otu_table(dv_limma) <- otu_table(david.limma,taxa_are_rows = F)
-ps_obj <- dv_limma
-#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
-# prepare metadata
+```{r, fig.width=15, fig.height=8}
+
+#limma
+limma_genus<- ps_david_clr
+otu_table(limma_genus) <- otu_table(david.limma,taxa_are_rows = F)
+ps_obj <- limma_genus
 ps_obj_meta <- sample_data(ps_obj)
 cols_of_interest =c('s_sec','batch')
 meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
 meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
 ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
-limma.scale <- scale(dv_limma@otu_table, center = T, scale = T) 
-# scale on samples
-limma.scale <- scale(t(limma.scale), center = T, scale = T) 
+annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
+data.scale <- scale(limma_genus@otu_table, center = T, scale = T) 
+data.scale <- scale(t(data.scale), center = T, scale = T) 
 #dev.new(width=20, height=20)
-pheatmap( limma.scale, 
+pheatmap(data.scale, 
   cluster_rows = F, 
   cluster_cols = T,
-  fontsize_row = 4, fontsize_col = 5,
-  fontsize = 12,
+  fontsize_row = 10, fontsize_col = 10,
+  fontsize = 25,
   clustering_distance_rows = 'euclidean',
   clustering_method = 'ward.D',
   treeheight_row = 15,
   annotation_col = meta_for_heatmap,
   annotation_colors = annotation_colors,
-  height = 40,
-  # col= hmcols, 
-  # breaks = bk,
   main='Limma correction')
 
 ```
-
-```{r, fig.width=20, fig.height=10}
 #svd
-dv_svd<- ps_david_clr
-otu_table(dv_svd) <- otu_table(david.svd,taxa_are_rows = F)
-ps_obj <- dv_svd
-#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
-# prepare metadata
+```{r, fig.width=15, fig.height=8}
+svd_genus<- ps_david_clr
+otu_table(svd_genus) <- otu_table(david.svd,taxa_are_rows = F)
+ps_obj <- svd_genus
 ps_obj_meta <- sample_data(ps_obj)
 cols_of_interest =c('s_sec','batch')
 meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
 meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
 ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
-limma.scale <- scale(dv_limma@otu_table, center = T, scale = T) 
-# scale on samples
-limma.scale <- scale(t(limma.scale), center = T, scale = T) 
-#dev.new(width=20, height=20)
+annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
+data.scale <- scale(svd_genus@otu_table, center = T, scale = T) 
+data.scale <- scale(t(data.scale), center = T, scale = T) 
 pheatmap( 
-  (limma.scale), 
+  (data.scale), 
   cluster_rows = F, 
   cluster_cols = T,
-  fontsize_row = 4, fontsize_col = 5,
-  fontsize = 12,
+  fontsize_row = 10, fontsize_col = 10,
+  fontsize = 25,
   clustering_distance_rows = 'euclidean',
   clustering_method = 'ward.D',
   treeheight_row = 15,
   annotation_col = meta_for_heatmap,
   annotation_colors = annotation_colors,
-  height = 40,
-  # col= hmcols, 
-  # breaks = bk,
   main='svd correction')
 
 ```
-```{r, fig.width=20, fig.height=10}
 #percentile
-dv_pn<- ps_david_clr
-otu_table(dv_pn) <- otu_table(david.percentile,taxa_are_rows = F)
-ps_obj <- dv_pn
-#ps_obj <- filter_taxa(ps_genus, function(x){sum(x > 0) > 10}, prune = TRUE)
+```{r, fig.width=15, fig.height=8}
+pn_genus<- ps_david_clr
+otu_table(pn_genus) <- otu_table(david.percentile ,taxa_are_rows = F)
+ps_obj <- pn_genus
 # prepare metadata
 ps_obj_meta <- sample_data(ps_obj)
 cols_of_interest =c('s_sec','batch')
 meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
 meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
 ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
-pn.scale <- scale(dv_pn@otu_table, center = T, scale = T) 
-# scale on samples
-pn.scale <- scale(t(pn.scale), center = T, scale = T) 
-#dev.new(width=20, height=20)
+annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
+data.scale <- scale(pn_genus@otu_table, center = T, scale = T) 
+data.scale <- scale(t(data.scale), center = T, scale = T) 
 pheatmap( 
-  (pn.scale), 
+  data.scale, 
   cluster_rows = F, 
   cluster_cols = T,
-  fontsize_row = 4, fontsize_col = 5,
-  fontsize = 12,
+  fontsize_row = 10, fontsize_col = 10,
+  fontsize = 25,
   clustering_distance_rows = 'euclidean',
   clustering_method = 'ward.D',
   treeheight_row = 15,
   annotation_col = meta_for_heatmap,
   annotation_colors = annotation_colors,
-  height = 40,
-  # col= hmcols, 
-  # breaks = bk,
-  main='percentile correction')
+  main='PN correction')
 ```
+
+#fabatch
+```{r, fig.width=15, fig.height=8}
+#fabatch
+#dv_fabatch<- ps_david_clr
+#otu_table(dv_fabatch) <- otu_table(david.fabatch,taxa_are_rows = F)
+#ps_obj <- dv_fabatch
+# prepare metadata
+#ps_obj_meta <- sample_data(ps_obj)
+#cols_of_interest =c('s_sec','batch')
+#meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+#meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+#ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+#annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
+#data.scale <- scale(dv_fabatch@otu_table, center = T, scale = T) 
+# scale on samples
+#data.scale <- scale(t(data.scale), center = T, scale = T) 
+#pheatmap( 
+  #(data.scale), 
+  #cluster_rows = F, 
+  #cluster_cols = T,
+  #fontsize_row = 10, fontsize_col = 10,
+  #fontsize = 25,
+  #clustering_distance_rows = 'euclidean',
+  #clustering_method = 'ward.D',
+  #treeheight_row = 15,
+  #annotation_col = meta_for_heatmap,
+  #annotation_colors = annotation_colors,
+ # main='fabatch correction')
+
+
+
+```
+
+
+#PLSDA
+```{r, fig.width=15, fig.height=8}
+plsda_genus<- ps_david_clr
+otu_table(plsda_genus) <- otu_table(david.plsda ,taxa_are_rows = F)
+ps_obj <-plsda_genus
+# prepare metadata
+ps_obj_meta <- sample_data(ps_obj)
+cols_of_interest =c('s_sec','batch')
+meta_for_heatmap <- ps_obj_meta[, (names(ps_obj_meta) %in% cols_of_interest)]
+meta_for_heatmap <- as(meta_for_heatmap, 'data.frame')
+ordered_meta <- meta_for_heatmap[order(meta_for_heatmap$s_sec,meta_for_heatmap$batch),]
+annotation_colors = list(batch = c(B3='#00FF66',B6='#FF6600',B4='#9933CC'),s_sec = c(main="#33CCCC", narcology="#CC3399"))
+data.scale <- scale(plsda_genus@otu_table, center = T, scale = T) 
+data.scale <- scale(t(data.scale), center = T, scale = T) 
+pheatmap( 
+  data.scale, 
+  cluster_rows = F, 
+  cluster_cols = T,
+  fontsize_row = 10, fontsize_col = 10,
+  fontsize = 25,
+  clustering_distance_rows = 'euclidean',
+  clustering_method = 'ward.D',
+  treeheight_row = 15,
+  annotation_col = meta_for_heatmap,
+  annotation_colors = annotation_colors,
+  main='PLSDA correction')
+
+```
+
 #Linear model per variable
-```{r}
+```{r, fig.width=10, fig.height=5}
 #Linear model per variable
 #
 david.form <- ~ david.trt + david.batch
@@ -691,6 +781,11 @@ david.varPart.percentile <- fitExtractVarPartModel(exprObj = t(david.percentile)
 david.varPart.svd <- fitExtractVarPartModel(exprObj = t(david.svd), 
                                            formula = david.form, 
                                            data = david.info)
+
+# svd
+david.varPart.plsda <- fitExtractVarPartModel(exprObj = t(david.plsda), 
+                                           formula = david.form, 
+                                           data = david.info)
 # extract the variance of trt and batch
 # before
 david.varmat.before <- as.matrix(david.varPart.before[ ,1:2])
@@ -704,18 +799,20 @@ david.varmat.limma <- as.matrix(david.varPart.limma[ ,1:2])
 david.varmat.percentile <- as.matrix(david.varPart.percentile[ ,1:2])
 # SVD
 david.varmat.svd <- as.matrix(david.varPart.svd[ ,1:2])
+#plsda
+david.varmat.plsda <- as.matrix(david.varPart.plsda[ ,1:2])
 #fabatch
 #panc.varmat.fab <- as.matrix(panc.varPart.fab[ ,1:2])
 # merge results
 david.variance <- c(as.vector(david.varmat.before), as.vector(david.varmat.bmc),
                    as.vector(david.varmat.combat), as.vector(david.varmat.limma),
-                   as.vector(david.varmat.percentile), as.vector(david.varmat.svd))#,as.vector(panc.varmat.fab))
+                   as.vector(david.varmat.percentile), as.vector(david.varmat.svd),as.vector(david.varmat.plsda))#,as.vector(panc.varmat.fab))
 
 # add batch, trt and methods info
 david.variance <- cbind(variance = david.variance, 
                        Type = rep(c('Group', 'Batch'), each = ncol(david.clr)),
                        method = rep(c('Before', 'BMC', 'ComBat', 'rBE', 
-                                      'PN', 'SVD'), each = 2*ncol(david.clr)))
+                                      'PN', 'SVD','PLSDA'), each = 2*ncol(david.clr)))
 # reorder levels  
 david.variance <- as.data.frame(david.variance)
 david.variance$method <- factor(david.variance$method, 
@@ -732,7 +829,7 @@ ggplot(david.variance, aes(x = Type, y = variance, fill = Type)) +
 
 ```
 # The pRDA method is a multivariate method to assess globally the effect of batch and treatment (two separate models
-```{r}
+```{r, fig.width=10, fig.height=5}
 
 david.data.design <- numeric()
 david.data.design$s_sec <- david.trt
@@ -809,6 +906,17 @@ david.rda.bat_prop.svd <- david.rda.svd1$pCCA$tot.chi*100/david.rda.svd1$tot.chi
 david.rda.trt_prop.svd <- david.rda.svd2$pCCA$tot.chi*100/david.rda.svd2$tot.chi
 
 
+# PLSDA
+# conditioning on a batch effect
+david.rda.plsda1 <- rda(david.plsda ~ s_sec + Condition(batch), 
+                     data = david.data.design)
+david.rda.plsda2 <- rda(david.plsda ~ batch + Condition(s_sec), 
+                     data = david.data.design)
+
+# amount of variance
+david.rda.bat_prop.plsda <- david.rda.plsda1$pCCA$tot.chi*100/david.rda.plsda1$tot.chi
+david.rda.trt_prop.plsda <- david.rda.plsda2$pCCA$tot.chi*100/david.rda.plsda2$tot.chi
+
 # Fabatch
 # conditioning on a batch effect
 #david.rda.fabatch1 <- rda(david.fabatch ~ s_sec + Condition(batch), 
@@ -839,18 +947,19 @@ david.rda.prop.svd <- c(david.rda.bat_prop.svd,
                         david.rda.trt_prop.svd)
 #david.rda.prop.fabatch <- c(panc.rda.bat_prop.fabatch, 
                            #panc.rda.trt_prop.fabatch)
-
+david.rda.prop.plsda <- c(david.rda.bat_prop.plsda, 
+                        david.rda.trt_prop.plsda)
 # merge results
 david.rda.prop.val <- c(david.rda.prop.before, david.rda.prop.bmc, 
                         david.rda.prop.combat, david.rda.prop.limma, 
-                        david.rda.prop.percentile, david.rda.prop.svd)#, panc.rda.prop.fabatch)
+                        david.rda.prop.percentile, david.rda.prop.svd,david.rda.prop.plsda)#, panc.rda.prop.fabatch)
 
 # add batch, trt and method info
 david.rda.prop <- data.frame(prop = david.rda.prop.val, 
                             prop.r = round(david.rda.prop.val, 2), 
                             Method = rep(c('Before', 'BMC', 'ComBat', 
-                                           'rBE', 'PN', 'SVD'), each = 2), 
-                            Type = rep(c('Batch', 's_sec'), 6))
+                                           'rBE', 'PN', 'SVD','PLSDA'), each = 2), 
+                            Type = rep(c('Batch', 's_sec'), 7))
 
 # reorder levels
 david.rda.prop$Method <- factor(david.rda.prop$Method, 
@@ -868,4 +977,501 @@ ggplot(data = david.rda.prop, aes(x = Method, y = prop, fill = Type)) +
 
 
 ```
+
+#PathoStat DF Wilcox_Test_df
+# clr df
+```{r}
+clr <- as.data.frame(as.matrix(ps_david_clr@otu_table))
+df.clr_p <- Wilcox_Test_df(t(clr),(as.numeric(david.trt)),pvalue.cutoff = 0.001)
+row.names(df.clr_p) <- df.clr_p$Name
+df.clr  <-  df.clr_p %>% filter(`Group Size adjusted fold change` >= 2)
+df.clr  <- df.clr  %>%
+  separate(Name,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(df.clr, x = 'Genus', y = 'Group Size adjusted fold change',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "viridis",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",  
+          ylab = 'Group Size adjusted fold change',# Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+```
+
+#Combat df
+```{r}
+combat <- as.data.frame(as.matrix(combat_genus@otu_table))
+df.combat_p <- Wilcox_Test_df(t(combat),(as.numeric(david.trt)),pvalue.cutoff = 0.001)
+row.names(df.combat_p) <- df.combat_p$Name
+df.combat  <- df.combat_p %>% filter(`Group Size adjusted fold change` >= 2)
+df.combat<- df.combat %>%
+  separate(Name,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(df.combat, x = 'Genus', y = 'Group Size adjusted fold change',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "viridis",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+```
+
+#limma df
+```{r, fig.width=5, fig.height=4}
+limma <- as.data.frame(as.matrix(limma_genus@otu_table))
+df.limma_p <- Wilcox_Test_df(t(limma),(as.numeric(david.trt)),pvalue.cutoff = 0.001)
+row.names(df.limma_p) <- df.limma_p$Name
+df.limma  <- df.limma_p  %>% filter(`Group Size adjusted fold change` >= 2)
+df.limma <- df.limma  %>%
+  separate(Name,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(df.limma , x = 'Genus', y = 'Group Size adjusted fold change',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "viridis",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+
+```
+#bmc df 
+```{r, fig.width=5, fig.height=4}
+bmc <- as.data.frame(as.matrix(bmc_genus@otu_table))
+df.bmc_p <- Wilcox_Test_df(t(bmc),(as.numeric(david.trt)),pvalue.cutoff = 0.001)
+row.names(df.bmc_p) <-df.bmc_p$Name
+df.bmc  <- df.bmc_p %>% filter(`Group Size adjusted fold change` >= 2)
+df.bmc<- df.bmc %>%
+  separate(Name,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(df.bmc, x = 'Genus', y = 'Group Size adjusted fold change',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "viridis",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+
+```
+#PN df
+```{r, fig.width=5, fig.height=4}
+pn <- as.data.frame(as.matrix(pn_genus@otu_table))
+df.pn_p <-  Wilcox_Test_df(t(pn),(as.numeric(david.trt)),pvalue.cutoff = 0.001)
+row.names(df.pn_p) <- df.pn_p$Name
+df.pn  <- df.pn_p %>% filter(`Group Size adjusted fold change` >= 1)
+df.pn<- df.pn %>%
+  separate(Name,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(df.pn, x = 'Genus', y = 'Group Size adjusted fold change',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "viridis",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+```
+#plsda df
+```{r, fig.width=5, fig.height=4}
+plsda <- as.data.frame(as.matrix(plsda_genus@otu_table))
+df.plsda_p <-  Wilcox_Test_df(t(plsda),(as.numeric(david.trt)),pvalue.cutoff = 0.001)
+row.names(df.plsda_p) <- df.plsda_p$Name
+df.plsda  <- df.plsda_p %>% filter(`Group Size adjusted fold change` >= 2)
+
+df.plsda<- df.plsda %>%
+  separate(Name,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(df.plsda, x = 'Genus', y = 'Group Size adjusted fold change',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "viridis",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+```
+```{r, fig.width=5, fig.height=4}
+svd <- as.data.frame(as.matrix(svd_genus@otu_table))
+df.svd_p <- Wilcox_Test_df(t(svd),(as.numeric(david.trt)),pvalue.cutoff = 0.001)
+row.names(df.svd_p) <-df.svd_p$Name
+df.svd  <- df.svd_p %>% filter(`Group Size adjusted fold change` >= 2)
+df.svd <- df.svd %>%
+  separate(Name,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(df.svd, x = 'Genus', y = 'Group Size adjusted fold change',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "viridis",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+
+```
+#Venn diagram
+```{r}
+data_df<- list(
+  clr_n= as.character(row.names(df.clr_p)), 
+  limma_method = as.character(row.names(df.limma_p)) , 
+  bmc_method= as.character(row.names(df.bmc_p)),
+  combat_method=as.character(row.names(df.combat_p)) ,
+  percentile_method =as.character(row.names(df.pn_p)),
+  plsda_method =as.character(row.names(df.plsda_p)),
+  svd_method = as.character(row.names(df.svd_p))
+)
+#
+venn(data_df,zcolor = "style")
+unique2 <- as.data.frame(Reduce(intersect,data_df))
+unique2
+```
+#Venn diagram df
+```{r}
+data_df_fc<- list(
+  clr_n= as.character(row.names(df.clr)), 
+  limma_method = as.character(row.names(df.limma)) , 
+  #bmc_method= as.character(row.names(df.bmc)),
+  combat_method=as.character(row.names(df.combat)) ,
+  #percentile_method =as.character(row.names(df.pn)),
+  plsda_method =as.character(row.names(df.plsda)),
+  svd_method = as.character(row.names(df.svd))
+)
+#
+venn(data_df_fc,zcolor = "style")
+unique <- as.data.frame(Reduce(intersect,data_df_fc))
+unique
+```
+#Density plot for df otu Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+```{r, fig.width=13, fig.height=7}
+group <- as.factor(bmc_genus@sam_data$s_sec)
+df_before <- as.data.frame(as.matrix(ps_david_clr@otu_table))
+david.before.df <- data.frame(value =df_before$Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+, batch = group)
+david.dens.before <- ggplot(david.before.df, aes(x = value, fill = group)) + 
+  geom_density(alpha = 0.5) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+ before correction', x = 'Value', fill = 'group') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+# BMC
+group <- as.factor(bmc_genus@sam_data$s_sec)
+df_bmc <- as.data.frame(as.matrix(bmc_genus@otu_table))
+david.bmc.df <- data.frame(value =df_bmc$Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+, batch = group)
+david.dens.bmc <- ggplot(david.bmc.df, aes(x = value, fill = group)) + 
+  geom_density(alpha = 0.5) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+ BMC correction', x = 'Value', fill = 'group') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+
+# ComBat
+df_combat <- as.data.frame(as.matrix(combat_genus@otu_table))
+david.combat.df <- data.frame(value =df_combat$Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+, batch = group)
+david.dens.combat <- ggplot(david.combat.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+Combat correction', x = 'Value', fill = 'group') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+david.dens.combat
+# removeBatchEffect 
+
+df_limma <- as.data.frame(as.matrix(limma_genus@otu_table))
+david.limma.df <- data.frame(value =df_limma$Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+, batch = group)
+david.dens.limma <- ggplot(david.limma.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+ Limma correction', x = 'Value', fill = 'group') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+#  fabacth  normal
+#df_fa <- as.data.frame(as.matrix(fabatch_genus@otu_table))
+#david.fabatch.df <- data.frame(value =df_fa$Firmicutes.c__Clo.o__Clost.f__Pep.g__Romboutsia, batch = group)
+#david.dens.fabatch <- ggplot(david.pn.df, aes(x = value, fill = batch)) + 
+  #geom_density(alpha = 0.5) + scale_fill_manual(values = color.mixo(1:10)) + 
+  #labs(title = 'c__Clo.o__Clost.f__Pep.g__Romboutsia Fabatch correction', x = 'Value', fill = 'group') + 
+  #heme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     #panel.grid = element_blank())
+
+
+# SVD
+df_svd <- as.data.frame(as.matrix(svd_genus@otu_table))
+david.svd.df <- data.frame(value =df_svd$Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+, batch = group)
+david.dens.svd <- ggplot(david.svd.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+ SVD correction', x = 'Value', fill = 'group') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+#plsda
+df_plsda <- as.data.frame(as.matrix(plsda_genus@otu_table))
+david.plsda.df <- data.frame(value =df_plsda$Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+, batch = group)
+david.dens.plsda <- ggplot(david.plsda.df, aes(x = value, fill = batch)) + 
+  geom_density(alpha = 0.5) + scale_fill_brewer(palette="Dark2") + 
+  labs(title = 'Firmicutes.c__Clo.o__Clost.f__Lac.g__Howardella
+ PLSDA correction', x = 'Value', fill = 'group') + 
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5), 
+                     panel.grid = element_blank())
+
+grid.arrange(david.dens.before, david.dens.bmc, 
+             david.dens.combat, david.dens.limma, 
+             david.dens.svd,david.dens.plsda,ncol = 2)
+
+```
+
+
+#DESEQ2
+```{r}
+otu.david <- as(otu_table(david_genus), 'matrix')
+otu.david.keep <- which(colSums(otu.david)*100/(sum(colSums(otu.david))) > 0.01)
+otu.david.keep <- otu.david[, otu.david.keep]
+otu.david.keep<- otu.david.keep + 1
+otu_table(david_genus) <- otu_table(otu.david.keep,taxa_are_rows = F)
+ps_obj <- david_genus
+diagdds = phyloseq_to_deseq2(ps_obj, ~ s_sec) 
+diagdds = DESeq(diagdds, test="Wald", fitType="parametric")
+resultsNames(diagdds)
+```
+
+```{r, fig.width=5, fig.height=5}
+res <- results(diagdds, contrast=c("s_sec","main","narcology"))
+alpha <- 0.001
+#minlfc <- 2
+sigtab <- res[which(res$padj < alpha), ]
+#sigtab <- res
+#sigtab <- sigtab[which(sigtab$log2FoldChange >= minlfc), ]
+#sigtab <- cbind(as(sigtab, "data.frame"), as(tax_table(ps_obj)[rownames(sigtab), ], "matrix"))
+sigtab <- cbind(as(sigtab, "data.frame"), as(tax_table(ps_obj)[rownames(sigtab), ], "matrix"))
+sigtab
+
+diff_expressed_taxa <- (rownames(sigtab))
+diff_expressed_taxa
+
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+# Phylum order
+x = tapply(sigtab$log2FoldChange, sigtab$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Phylum = factor(as.character(sigtab$Phylum), levels=names(x))
+# Genus order
+x = tapply(sigtab$log2FoldChange, sigtab$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$Genus = factor(as.character(sigtab$Genus), levels=names(x))
+ggplot(sigtab, aes(x=Genus, y=log2FoldChange, color=Phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5))
+
+# sigtab
+sigtab <- tibble::rownames_to_column(sigtab, "DNA")
+
+ggbarplot(sigtab, x = "Genus", y = 'log2FoldChange',
+          fill = "Phylum",           # change fill color by mpg_level
+          #color="pink",            # Set bar border colors to white
+          palette = 'Dark2',            # jco journal color palett. see ?ggpar
+          sort.val = "desc",          # Sort the value in descending order
+          sort.by.groups = FALSE,     # Don't sort inside each group
+          x.text.angle = 90,          # Rotate vertically x axis texts
+          #ylab = "log2FoldChange",
+          #legend.title = "MPG Group",
+          rotate = TRUE,
+          ggtheme = theme_minimal())
+```
+#Venn diagram ( for p-val < 0.001)
+```{r}
+row.names(sigtab) <- sigtab$DNA
+data_df<- list(
+  clr_n= as.character(row.names(df.clr_p)), 
+  limma_method = as.character(row.names(df.limma_p)) , 
+  bmc_method= as.character(row.names(df.bmc_p)),
+  combat_method=as.character(row.names(df.combat_p)) ,
+  #percentile_method =as.character(row.names(df.pn_p)),
+  plsda_method =as.character(row.names(df.plsda_p)),
+  svd_method = as.character(row.names(df.svd_p)),
+  deseq_david = as.character(row.names(sigtab))
+)
+#
+venn(data_df,zcolor = "style")
+unique2 <- as.data.frame(Reduce(intersect,data_df))
+unique2
+```
+#Aldex
+```{r}
+aldex2_david <- aldex(t(otu_table(david_genus@otu_table)),as.vector((david_genus@sam_data$s_sec)), test="t", effect = T, denom="all")
+```
+
+```{r}
+aldex.plot(aldex2_david, type="MW", test="wilcox", called.cex = 1, cutoff = 0.001)
+```
+
+```{r, fig.width=5, fig.height=5}
+#taxa_info <- data.frame(tax_table(david_genus))
+sig_aldex2 <- aldex2_david %>%
+  rownames_to_column(var = "OTU") %>%
+  filter(wi.eBH < 0.001) %>%
+  arrange(effect, wi.eBH) %>%
+  dplyr::select(OTU, diff.btw, diff.win, effect, wi.ep, wi.eBH)
+row.names(sig_aldex2) <- sig_aldex2$OTU
+sig_aldex2_df <- sig_aldex2 %>% filter(diff.win >= 2)
+sig_aldex2_df  <-sig_aldex2_df  %>%
+  separate(OTU,c('Phylum','Class','Order','Family','Genus'),sep= "__")
+
+ggbarplot(sig_aldex2_df, x = 'Genus', y = 'diff.win',
+          fill = "Phylum",               # change fill color by cyl
+          #color = "white",            # Set bar border colors to white
+          palette = "Dark2",            # jco journal color palett. see ?ggpar
+          sort.val = "asc",           # Sort the value in ascending order
+          sort.by.groups = F,
+          rotate = TRUE,# Sort inside each group
+          x.text.angle = 90           # Rotate vertically x axis texts
+)
+```
+#venn
+```{r}
+
+row.names(sigtab) <- sigtab$DNA
+data_df<- list(
+  clr_n= as.character(row.names(df.clr_p)), 
+  limma_method = as.character(row.names(df.limma_p)) , 
+  bmc_method= as.character(row.names(df.bmc_p)),
+  combat_method=as.character(row.names(df.combat_p)) ,
+  percentile_method =as.character(row.names(df.pn_p)),
+  plsda_method =as.character(row.names(df.plsda_p)),
+  svd_method = as.character(row.names(df.svd_p)),
+  deseq_david = as.character(row.names(sigtab)),
+  aldex_david = as.character(row.names(sig_aldex2))
+  
+)
+#
+venn(data_df,zcolor = "style")
+unique2 <- as.data.frame(Reduce(intersect,data_df))
+unique2
+```
+#Venn diagram for  (groupfoldchange df >= 2 and p val < 0.001)
+```{r}
+data_df_fc<- list(
+  clr_n= as.character(row.names(df.clr)), 
+  limma_method = as.character(row.names(df.limma)) , 
+  #bmc_method= as.character(row.names(df.bmc)),
+  combat_method=as.character(row.names(df.combat)) ,
+  #percentile_method =as.character(row.names(df.pn)),
+  plsda_method =as.character(row.names(df.plsda)),
+  svd_method = as.character(row.names(df.svd)),
+  aldex_david_df = as.character(row.names(sig_aldex2_df))
+)
+#
+venn(data_df_fc,zcolor = "style")
+unique <- as.data.frame(Reduce(intersect,data_df_fc))
+unique
+```
+#PERMANOVA
+#before clr normalization
+```{r}
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(david_genus))
+dist = phyloseq::distance(david_genus@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+
+
+```
+#clr permanova
+```{r}
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(ps_david_clr))
+dist = phyloseq::distance(ps_david_clr@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+```
+#BMC permanova
+```{r}
+sampledf <- data.frame(sample_data(bmc_genus))
+dist = phyloseq::distance(bmc_genus@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+```
+#Combat permanova
+```{r}
+sampledf <- data.frame(sample_data(combat_genus))
+dist = phyloseq::distance(combat_genus@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+```
+#Limma permanova
+```{r}
+sampledf <- data.frame(sample_data(limma_genus))
+dist = phyloseq::distance(limma_genus@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+```
+#SVD permanova
+```{r}
+sampledf <- data.frame(sample_data(svd_genus))
+dist = phyloseq::distance(svd_genus@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+```
+#PLSDA permanova
+```{r}
+sampledf <- data.frame(sample_data(plsda_genus))
+dist = phyloseq::distance(plsda_genus@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+```
+#PN permanova
+```{r}
+sampledf <- data.frame(sample_data(pn_genus))
+dist = phyloseq::distance(pn_genus@otu_table, method = "jaccard",binary =T)
+# Adonis test
+adonis(dist  ~ s_sec, data = sampledf)
+```
+#save tables for RF
+```{r}
+meta_david <- as.data.frame(david_genus@sam_data)
+write.table(meta_david,'/Users/basilews/phylo/batch_david/output/meta_david.tsv',sep = ';')
+#combat 
+combat_otu <- as.data.frame(combat_genus@otu_table)
+write.table(combat_otu,'/Users/basilews/phylo/batch_david/output/combat_otu.tsv',sep = ';')
+#bmc
+bmc_otu <- as.data.frame(bmc_genus@otu_table)
+write.table(bmc_otu,'/Users/basilews/phylo/batch_david/output/bmc_otu.tsv',sep = ';')
+#limma 
+limma_otu <- as.data.frame(limma_genus@otu_table)
+write.table(limma_otu,'/Users/basilews/phylo/batch_david/output/limma_otu.tsv',sep = ';')
+#SVD
+svd_otu <- as.data.frame(svd_genus@otu_table)
+write.table(svd_otu,'/Users/basilews/phylo/batch_david/output/svd_otu.tsv',sep = ';')
+#PLSDA
+plsda_otu <- as.data.frame(plsda_genus@otu_table)
+write.table(plsda_otu,'/Users/basilews/phylo/batch_david/output/plsda_otu.tsv',sep = ';')
+#PN
+pn_otu <- as.data.frame(pn_genus@otu_table)
+write.table(pn_otu,'/Users/basilews/phylo/batch_david/output/pn_otu.tsv',sep = ';')
+#clr 
+clr_otu <- as.data.frame(ps_david_clr@otu_table)
+write.table(clr_otu,'/Users/basilews/phylo/batch_david/output/clr_otu.tsv',sep = ';')
+#david 
+david_otu <- as.data.frame(david_genus@otu_table)
+write.table(david_otu,'/Users/basilews/phylo/batch_david/output/david_otu.tsv',sep = ';')
+```
+
+
 
